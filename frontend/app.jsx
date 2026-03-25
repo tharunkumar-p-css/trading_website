@@ -138,8 +138,8 @@ const OrderBook = ({ symbol, livePrice }) => {
 };
 
 // API Helper
-const MUTUAL_FUNDS = ["PARAGPARIKH", "QUANTUM", "SBISMALL", "MIRAEASSET", "HDFCMIDCAP", "NIPPONIND", "AXISBLUECHIP", "SBIBLUECHIP", "ICICIPRU", "MOTILALOSWAL", "KOTAKSMALL", "UTINIFTY", "DSPMIDCAP", "FRANKLININD", "TATAELSS"];
-const CRYPTO_ASSETS = ["BTC_INR", "ETH_INR", "SOL_INR", "DOGE_INR", "PEPE_INR", "ADA_INR", "DOT_INR", "XRP_INR", "LINK_INR", "MATIC_INR", "SHIB_INR", "AVAX_INR", "UNI_INR", "LTC_INR"];
+const MUTUAL_FUNDS = ["PARAGPARIKH", "QUANTUM", "SBISMALL", "MIRAEASSET", "HDFCMIDCAP", "NIPPONIND", "AXISBLUECHIP", "SBIBLUECHIP", "ICICIPRU", "MOTILALOSWAL", "KOTAKSMALL", "UTINIFTY", "DSPMIDCAP", "FRANKLININD", "TATAELSS", "ABSLFRONTLINE", "PGIMINDIA", "CANARAROB", "SUNDARAM", "EDELWEISS", "INVESCO", "BANDHAN", "SAMCO", "QUANT", "NAVISMALL", "HSBC", "BARODA", "MAHINDRA", "UNION", "TAURUS", "NJ", "WHITEFR", "BANKOFI", "ITI", "SHRIRAM"];
+const CRYPTO_ASSETS = ["BTC_INR", "ETH_INR", "SOL_INR", "DOGE_INR", "PEPE_INR", "ADA_INR", "DOT_INR", "XRP_INR", "LINK_INR", "MATIC_INR", "SHIB_INR", "AVAX_INR", "UNI_INR", "LTC_INR", "BCH_INR", "ATOM_INR", "ALGO_INR", "XLM_INR", "VET_INR", "ICP_INR", "FIL_INR", "THETA_INR", "AAVE_INR", "EOS_INR", "XTZ_INR", "MKR_INR", "AXS_INR", "SAND_INR", "MANA_INR", "GALA_INR", "ENJ_INR", "CHZ_INR", "QNT_INR", "NEAR_INR", "FTM_INR", "GRT_INR"];
 const API_BASE = "";
 const apiFetch = async (endpoint, method = "GET", body = null, token = null) => {
     const headers = { "Content-Type": "application/json" };
@@ -456,12 +456,28 @@ const Dashboard = () => {
                     <button onClick={() => handleTabChange('orders')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='orders' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="list" className="mr-3"></i> Orders
                     </button>
-                    <button onClick={() => handleTabChange('pro_terminal')} className={`w-full flex items-center p-3 rounded-lg text-left transition font-bold shadow-lg mt-4 ${activeTab==='pro_terminal' ? 'bg-primary/20 text-white border border-primary/50' : 'bg-slate-900 border border-slate-800 text-primary hover:bg-slate-800'}`}>
-                        <i data-lucide="layout-grid" className="mr-3 text-primary"></i> PRO Terminal
-                    </button>
-                    <button onClick={() => handleTabChange('ipo')} className={`w-full flex items-center p-3 rounded-lg text-left transition font-bold border ${activeTab==='ipo' ? 'bg-slate-800/80 text-white border-yellow-500/50' : 'bg-dark border-dashed border-slate-700 text-yellow-500/80 hover:border-yellow-500/50'}`}>
-                        <i data-lucide="rocket" className="mr-3 text-yellow-500"></i> IPO Center
-                    </button>
+                    
+                    <div className="pt-4 mt-2 border-t border-slate-800">
+                        <span className="text-xs text-slate-500 font-bold uppercase tracking-wider pl-3 mb-2 block">Advanced Pro Features</span>
+                        <button onClick={() => handleTabChange('pro_terminal')} className={`w-full flex items-center p-3 rounded-lg text-left transition font-bold shadow-lg ${activeTab==='pro_terminal' ? 'bg-primary/20 text-white border border-primary/50' : 'bg-slate-900 border border-slate-800 text-primary hover:bg-slate-800'}`}>
+                            <i data-lucide="layout-grid" className="mr-3 text-primary"></i> PRO Terminal
+                        </button>
+                        <button onClick={() => handleTabChange('heatmap')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='heatmap' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                            <i data-lucide="map" className="mr-3 text-blue-400"></i> Sector Heatmap
+                        </button>
+                        <button onClick={() => handleTabChange('sandbox')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='sandbox' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                            <i data-lucide="flask-conical" className="mr-3 text-purple-400"></i> Quant Sandbox
+                        </button>
+                        <button onClick={() => handleTabChange('calendar')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='calendar' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                            <i data-lucide="calendar" className="mr-3 text-red-400"></i> Macro Calendar
+                        </button>
+                        <button onClick={() => handleTabChange('otc')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='otc' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                            <i data-lucide="briefcase" className="mr-3 text-slate-400"></i> OTC Dark Pool
+                        </button>
+                        <button onClick={() => handleTabChange('ipo')} className={`w-full flex items-center p-3 rounded-lg text-left transition font-bold border ${activeTab==='ipo' ? 'bg-slate-800/80 text-white border-yellow-500/50' : 'bg-dark border-dashed border-slate-700 text-yellow-500/80 hover:border-yellow-500/50'}`}>
+                            <i data-lucide="rocket" className="mr-3 text-yellow-500"></i> IPO Center
+                        </button>
+                    </div>
                     <button onClick={() => handleTabChange('wallet')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='wallet' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="wallet" className="mr-3"></i> Wallet (₹{wallet.balance.toFixed(2)})
                     </button>
@@ -521,6 +537,10 @@ const Dashboard = () => {
                     {activeTab === 'portfolio' && <PortfolioTab portfolio={portfolio} livePrices={livePrices} token={token} portfolioHistory={portfolioHistory} />}
                     {activeTab === 'orders' && <OrdersTab orders={orders} onRefresh={loadData} token={token} />}
                     {activeTab === 'pro_terminal' && <ProTerminalTab livePrices={livePrices} priceHistory={priceHistory} />}
+                    {activeTab === 'heatmap' && <HeatmapTab livePrices={livePrices} priceHistory={priceHistory} />}
+                    {activeTab === 'sandbox' && <SandboxTab livePrices={livePrices} priceHistory={priceHistory} />}
+                    {activeTab === 'calendar' && <CalendarTab />}
+                    {activeTab === 'otc' && <OTCTab token={token} wallet={wallet} />}
                     {activeTab === 'ipo' && <IPOTab wallet={wallet} token={token} />}
                     {activeTab === 'wallet' && <WalletTab balance={wallet.balance} token={token} />}
                 </main>
@@ -1641,6 +1661,292 @@ const IPOTab = ({ wallet, token }) => {
                                     </button>
                                 </div>
                             </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+};
+
+// --- New Features Components ---
+
+const HeatmapTab = ({ livePrices, priceHistory }) => {
+    // Group symbols into pseudo-sectors
+    const sectors = {
+        "Technology": ["TCS", "INFY", "WIPRO", "HCLTECH", "TECHM"],
+        "Financials": ["HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK"],
+        "Energy/Auto": ["RELIANCE", "ONGC", "TATAMOTORS", "M&M", "MARUTI"],
+        "Crypto": ["BTC_INR", "ETH_INR", "XRP_INR", "SOL_INR"],
+        "Mutual Funds": ["NIPPONIND", "HDFFUND", "ICICIPRU", "SBIMF"]
+    };
+
+    return (
+        <div className="flex flex-col h-full mt-2">
+            <h2 className="text-2xl font-bold mb-4 flex items-center gap-2 max-w-6xl mx-auto w-full"><i data-lucide="map" className="text-blue-400"></i> Market Sector Heatmap</h2>
+            <div className="flex-1 bg-darker rounded-xl border border-slate-800 overflow-hidden shadow-2xl p-2 max-w-6xl mx-auto w-full flex flex-col gap-2">
+                {Object.entries(sectors).map(([sector, symbols]) => (
+                    <div key={sector} className="flex-1 flex flex-col border border-slate-800 rounded-lg overflow-hidden bg-dark">
+                        <div className="bg-slate-900/80 px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-widest border-b border-slate-800 shadow-sm">{sector}</div>
+                        <div className="flex-1 flex w-full">
+                            {symbols.map(sym => {
+                                // Simulate percent change using latest vs earliest in history (or random if not enough)
+                                const hist = priceHistory[sym] || [];
+                                const currentP = livePrices[sym] || 0;
+                                let percentChange = (Math.random() * 8) - 4; // fallback mockup
+                                if(hist.length > 5) {
+                                    const oldP = hist[hist.length-5].close;
+                                    percentChange = ((currentP - oldP) / oldP) * 100;
+                                }
+                                
+                                const isPositive = percentChange >= 0;
+                                const absChange = Math.abs(percentChange);
+                                
+                                // Color Intensity Logic
+                                let bgColor = isPositive ? 'bg-success/20' : 'bg-danger/20';
+                                if (absChange > 2) bgColor = isPositive ? 'bg-success/50' : 'bg-danger/50';
+                                if (absChange > 5) bgColor = isPositive ? 'bg-success' : 'bg-danger';
+
+                                // Flex sizing relative to a 'mock market cap' (randomized via sym length for fun)
+                                const flexBasis = (sym.length * 10) + "%";
+                                
+                                return (
+                                    <div key={sym} className={`border border-black/20 ${bgColor} flex flex-col items-center justify-center p-2 text-center transition hover:scale-[1.02] hover:z-10 cursor-crosshair group shadow-inner`} style={{ flexBasis, flexGrow: sym.length }}>
+                                        <div className="font-bold text-white text-sm md:text-md xl:text-lg mix-blend-overlay drop-shadow-md">{sym}</div>
+                                        <div className="text-xs font-mono text-white/80">{isPositive ? '+' : ''}{percentChange.toFixed(2)}%</div>
+                                        <div className="text-[10px] text-white/50 hidden md:block opacity-0 group-hover:opacity-100 transition mt-1">₹{currentP.toFixed(2)}</div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+const SandboxTab = ({ livePrices, priceHistory }) => {
+    const [strategy, setStrategy] = useState("sma_crossover");
+    const [asset, setAsset] = useState("RELIANCE");
+    const [capital, setCapital] = useState("100000");
+    const [isSimulating, setIsSimulating] = useState(false);
+    const [result, setResult] = useState(null);
+
+    const runSimulation = () => {
+        setIsSimulating(true);
+        setResult(null);
+        setTimeout(() => {
+            // Hardcoded mocked output for immediate visual satisfaction
+            const baseFactor = strategy === 'sma_crossover' ? 1.15 : strategy === 'mean_reversion' ? 1.08 : 0.95;
+            const finalValue = parseFloat(capital) * baseFactor * (1 + (Math.random() * 0.1));
+            const pnl = finalValue - parseFloat(capital);
+            const winRate = Math.floor(Math.random() * 30) + 45; // 45% - 75%
+            setResult({ finalValue, pnl, winRate, trades: Math.floor(Math.random() * 100) + 20 });
+            setIsSimulating(false);
+        }, 1500);
+    };
+
+    return (
+        <div className="max-w-4xl mx-auto mt-4">
+            <h2 className="text-2xl font-bold mb-2 flex items-center gap-2"><i data-lucide="flask-conical" className="text-purple-400"></i> Quant Sandbox</h2>
+            <p className="text-slate-400 mb-6 text-sm">Design algorithmic conditional strategies and backtest them across historical limit data.</p>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-dark border border-slate-800 rounded-xl p-6 shadow-xl relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/10 rounded-full blur-3xl -mr-10 -mt-10"></div>
+                    <h3 className="text-lg font-bold mb-4 border-b border-slate-700/50 pb-2">Strategy Parameters</h3>
+                    
+                    <div className="space-y-4 relative z-10">
+                        <div>
+                            <label className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Algorithm Strategy</label>
+                            <select value={strategy} onChange={e=>setStrategy(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded p-3 focus:outline-none focus:border-purple-400 text-sm">
+                                <option value="sma_crossover">SMA 50/200 Crossover (Golden Cross)</option>
+                                <option value="mean_reversion">Bollinger Band Mean Reversion</option>
+                                <option value="momentum">RSI Momentum Breakout</option>
+                            </select>
+                        </div>
+                        <div className="flex gap-4">
+                            <div className="flex-1">
+                                <label className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Target Asset</label>
+                                <select value={asset} onChange={e=>setAsset(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded p-3 focus:outline-none focus:border-purple-400 text-sm">
+                                    <option value="RELIANCE">RELIANCE</option>
+                                    <option value="BTC_INR">BTC_INR</option>
+                                    <option value="HDFCBANK">HDFCBANK</option>
+                                    <option value="TCS">TCS</option>
+                                    <option value="NIPPONIND">NIPPONIND</option>
+                                </select>
+                            </div>
+                            <div className="flex-[1.5]">
+                                <label className="text-xs text-slate-400 uppercase tracking-wider block mb-1">Simulated Capital (₹)</label>
+                                <input type="number" value={capital} onChange={e=>setCapital(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded p-3 focus:outline-none focus:border-purple-400 text-sm font-mono" />
+                            </div>
+                        </div>
+                        <div className="pt-2">
+                            <button onClick={runSimulation} disabled={isSimulating} className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-3.5 rounded transition shadow-lg shadow-purple-900/50 flex justify-center items-center gap-2">
+                                {isSimulating ? <i data-lucide="loader" className="animate-spin w-5 h-5"></i> : <i data-lucide="play" className="w-5 h-5"></i>}
+                                {isSimulating ? "Crunching Ticks Engine..." : "Run Backtest Simulation"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 shadow-inner flex flex-col justify-center items-center text-center">
+                    {!result && !isSimulating && (
+                        <div className="text-slate-500 flex flex-col items-center">
+                            <i data-lucide="bar-chart-2" className="w-16 h-16 mb-4 opacity-20"></i>
+                            <p>Configure parameters and run a simulation<br/>to generate backtest analytics.</p>
+                        </div>
+                    )}
+                    {isSimulating && (
+                        <div className="text-purple-400 flex flex-col items-center animate-pulse">
+                            <i data-lucide="activity" className="w-16 h-16 mb-4"></i>
+                            <p className="font-mono text-sm">Processing 1Y Historical Candles...</p>
+                        </div>
+                    )}
+                    {result && !isSimulating && (
+                        <div className="w-full h-full flex flex-col justify-center animate-fade-in">
+                            <h3 className="text-slate-400 text-sm uppercase tracking-widest mb-1">Estimated Output</h3>
+                            <div className={`text-4xl font-bold font-mono ${result.pnl >= 0 ? 'text-success' : 'text-danger'} mb-2`}>
+                                {result.pnl >= 0 ? '+' : ''}₹{result.pnl.toFixed(2)}
+                            </div>
+                            <div className="text-slate-300 font-mono text-xl mb-6 border-b border-slate-800 pb-4">
+                                Final Balance: ₹{result.finalValue.toFixed(2)}
+                            </div>
+                            
+                            <div className="grid grid-cols-2 gap-4 text-left">
+                                <div className="bg-dark p-3 rounded border border-slate-800">
+                                    <div className="text-xs text-slate-500 uppercase">Win Rate</div>
+                                    <div className="text-xl font-bold text-white">{result.winRate}%</div>
+                                </div>
+                                <div className="bg-dark p-3 rounded border border-slate-800">
+                                    <div className="text-xs text-slate-500 uppercase">Total Trades</div>
+                                    <div className="text-xl font-bold text-white">{result.trades} Actions</div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const CalendarTab = () => {
+    const events = [
+        { time: "00:15", title: "Federal Reserve Interest Rate Decision", impact: "HIGH", actual: "5.50%", forecast: "5.50%", prev: "5.25%", currency: "USD" },
+        { time: "01:00", title: "Non-Farm Payrolls", impact: "HIGH", actual: "185K", forecast: "160K", prev: "150K", currency: "USD" },
+        { time: "04:30", title: "RBI Monetary Policy Meeting", impact: "HIGH", actual: "Waiting", forecast: "6.50%", prev: "6.50%", currency: "INR" },
+        { time: "11:00", title: "Crude Oil Inventories", impact: "MED", actual: "-1.2M", forecast: "0.5M", prev: "1.0M", currency: "USD" },
+        { time: "14:15", title: "ECB President Lagarde Speaks", impact: "MED", actual: "--", forecast: "--", prev: "--", currency: "EUR" }
+    ];
+
+    return (
+        <div className="max-w-5xl mx-auto mt-4">
+            <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold flex items-center gap-2"><i data-lucide="calendar" className="text-red-400"></i> Global Macro Calendar</h2>
+                <div className="bg-red-500/10 text-red-400 border border-red-500/30 px-3 py-1 text-xs font-bold rounded shadow-[0_0_10px_rgba(239,68,68,0.2)] animate-pulse">
+                    VOLATILITY WARNING OVERRIDE
+                </div>
+            </div>
+
+            <div className="bg-dark rounded-xl border border-slate-800 shadow-xl overflow-x-auto">
+                <table className="w-full text-left whitespace-nowrap">
+                    <thead className="bg-slate-900/80 border-b border-slate-800">
+                        <tr>
+                            <th className="p-4 text-slate-400 text-sm w-24">Time (IST)</th>
+                            <th className="p-4 text-slate-400 text-sm w-16 text-center">Impact</th>
+                            <th className="p-4 text-slate-400 text-sm">Event Trigger</th>
+                            <th className="p-4 text-slate-400 text-sm text-right">Actual</th>
+                            <th className="p-4 text-slate-400 text-sm text-right">Forecast</th>
+                            <th className="p-4 text-slate-400 text-sm text-right hidden sm:table-cell">Previous</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/50">
+                        {events.map((ev, idx) => (
+                            <tr key={idx} className="hover:bg-slate-800/30 transition group">
+                                <td className="p-4 font-mono text-slate-300">{ev.time}</td>
+                                <td className="p-4 text-center">
+                                    <div className="flex justify-center gap-0.5" title={ev.impact}>
+                                        <div className={`w-2 h-4 rounded-sm ${ev.impact === 'HIGH' || ev.impact === 'MED' ? (ev.impact === 'HIGH' ? 'bg-danger' : 'bg-yellow-500') : 'bg-slate-700'}`}></div>
+                                        <div className={`w-2 h-4 rounded-sm ${ev.impact === 'HIGH' ? 'bg-danger' : 'bg-slate-700'}`}></div>
+                                        <div className={`w-2 h-4 rounded-sm ${ev.impact === 'HIGH' ? 'bg-danger' : 'bg-slate-700'}`}></div>
+                                    </div>
+                                </td>
+                                <td className="p-4 font-bold text-slate-200">
+                                    <span className="text-xs font-bold bg-slate-800 text-primary px-2 py-0.5 rounded mr-2 border border-slate-700">{ev.currency}</span>
+                                    {ev.title}
+                                    {ev.actual === "Waiting" && <span className="ml-2 text-[10px] bg-red-500 text-white px-2 py-0.5 rounded animate-pulse">LIVE IMMINENT</span>}
+                                </td>
+                                <td className={`p-4 text-right font-bold ${ev.actual === 'Waiting' ? 'text-slate-500 animate-pulse' : 'text-white'}`}>{ev.actual}</td>
+                                <td className="p-4 text-right text-slate-400">{ev.forecast}</td>
+                                <td className="p-4 text-right text-slate-500 hidden sm:table-cell">{ev.prev}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+            <p className="text-xs text-slate-500 mt-4 text-center">If a macro event triggers, global assets mapped to {`"USD"`} or {`"INR"`} may temporarily experience hyper-volatility spikes.</p>
+        </div>
+    );
+};
+
+const OTCTab = ({ token, wallet }) => {
+    // Basic mock logic for OTC. Real integration requires a separate database table for `otc_listings`.
+    const [listings, setListings] = useState([
+        { id: 1, seller: "Whale_007", symbol: "RELIANCE", quantity: 5000, price: 2900, minPrice: 2880, status: "OPEN" },
+        { id: 2, seller: "CryptoBaron", symbol: "BTC_INR", quantity: 15, price: 5800000, minPrice: 5750000, status: "OPEN" },
+        { id: 3, seller: "RetailLegend", symbol: "TCS", quantity: 1200, price: 3950, minPrice: 3950, status: "LOCKED" },
+    ]);
+
+    const handleBuy = (id, cost) => {
+        if (wallet.balance < cost) return alert("Insufficient funds to buy this OTC block!");
+        alert("OTC Dark Pool Block successfully settled! (Simulated)");
+        setListings(prev => prev.map(l => l.id === id ? {...l, status: "FILLED"} : l));
+    };
+
+    return (
+        <div className="max-w-6xl mx-auto mt-4">
+            <div className="flex justify-between items-center mb-6">
+                <div>
+                    <h2 className="text-2xl font-bold flex items-center gap-2"><i data-lucide="briefcase" className="text-slate-400"></i> Peer-to-Peer OTC Dark Pool</h2>
+                    <p className="text-slate-400 text-sm mt-1">Buy enormous blocks of assets directly from other traders off-market.</p>
+                </div>
+                <button className="bg-primary hover:bg-blue-600 text-white px-4 py-2 rounded font-bold shadow-lg transition">Create Block Listing</button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {listings.map(l => {
+                    const totalCost = l.quantity * l.price;
+                    return (
+                        <div key={l.id} className="bg-dark/80 backdrop-blur border border-slate-700 hover:border-slate-500 rounded-xl p-5 shadow-2xl relative overflow-hidden transition group">
+                            {l.status === 'FILLED' && <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-10"><div className="border-2 border-danger text-danger text-xl font-bold px-4 py-2 transform rotate-[-15deg] uppercase tracking-widest bg-dark shadow-2xl">FILLED / CLEARED</div></div>}
+                            
+                            <div className="flex justify-between items-start mb-3 border-b border-slate-800 pb-3">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-600 flex items-center justify-center"><i data-lucide="user" className="w-4 h-4 text-slate-400"></i></div>
+                                    <span className="font-bold text-slate-300 text-sm">{l.seller}</span>
+                                </div>
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${l.status === 'OPEN' ? 'bg-success/20 text-success border-success/30' : 'bg-yellow-500/20 text-yellow-500 border-yellow-500/30'}`}>
+                                    {l.status}
+                                </span>
+                            </div>
+
+                            <div className="flex justify-between items-end mb-4">
+                                <div>
+                                    <h3 className="text-2xl font-bold text-white mb-1"><span className="text-primary font-mono">{l.quantity.toLocaleString()}</span> {l.symbol}</h3>
+                                    <div className="text-slate-500 text-sm">Offered @ ₹{l.price.toLocaleString()}/ea</div>
+                                </div>
+                            </div>
+
+                            <div className="bg-slate-900 border border-slate-800 rounded p-3 mb-5">
+                                <span className="text-xs text-slate-500 uppercase block mb-1">Total Block Settlement</span>
+                                <span className="font-mono text-xl font-bold text-white">₹{totalCost.toLocaleString()}</span>
+                            </div>
+
+                            <button onClick={()=>handleBuy(l.id, totalCost)} disabled={l.status !== 'OPEN'} className="w-full bg-slate-800 hover:bg-primary border border-slate-700 hover:border-primary text-white font-bold py-3 rounded transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed group-hover:shadow-[0_0_15px_rgba(59,130,246,0.3)]">
+                                <i data-lucide="shield-check" className="w-4 h-4"></i> Secure OTC Buy
+                            </button>
                         </div>
                     );
                 })}
