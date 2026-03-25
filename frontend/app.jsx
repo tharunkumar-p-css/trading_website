@@ -1,11 +1,141 @@
 console.log("App.jsx is executing...");
 const { useState, useEffect, useContext, createContext, useRef } = React;
 const { createRoot } = ReactDOM;
-const { LineChart, Line, ComposedChart, Bar, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer } = window.Recharts || {};
+const { LightweightCharts } = window;
+if (!LightweightCharts) console.error("LightweightCharts is not loaded!");
 
-if (!window.Recharts) {
-    console.error("Recharts is not loaded!");
-}
+const RealtimeChart = ({ data, type = "candlestick", height, showVolume = false, showIndicators = false }) => {
+    const chartContainerRef = useRef();
+    const chartRef = useRef();
+    const seriesRef = useRef();
+
+    useEffect(() => {
+        const chart = LightweightCharts.createChart(chartContainerRef.current, {
+            autoSize: true,
+            layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
+            grid: { 
+                vertLines: { color: type === 'line' ? 'transparent' : '#1e293b' }, 
+                horzLines: { color: type === 'line' ? 'transparent' : '#1e293b' } 
+            },
+            timeScale: { visible: type !== 'line', timeVisible: true, secondsVisible: true, borderVisible: false },
+            rightPriceScale: { visible: type !== 'line', borderVisible: false },
+            handleScroll: type !== 'line',
+            handleScale: type !== 'line'
+        });
+        chartRef.current = chart;
+        
+        const mainSeries = type === "candlestick" 
+            ? chart.addCandlestickSeries({ upColor: '#22c55e', downColor: '#ef4444', borderVisible: false, wickUpColor: '#22c55e', wickDownColor: '#ef4444' })
+            : chart.addLineSeries({ color: '#3b82f6', lineWidth: 2, crosshairMarkerVisible: false });
+        
+        let volumeSeries, sma14, sma50;
+        if (showVolume && type === "candlestick") {
+            volumeSeries = chart.addHistogramSeries({
+                color: '#26a69a',
+                priceFormat: { type: 'volume' },
+                priceScaleId: '', 
+            });
+            chart.priceScale('').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+        }
+        
+        if (showIndicators && type === "candlestick") {
+            sma14 = chart.addLineSeries({ color: 'rgba(255, 193, 7, 0.8)', lineWidth: 2, title: 'SMA 14', crosshairMarkerVisible: false });
+            sma50 = chart.addLineSeries({ color: 'rgba(156, 39, 176, 0.8)', lineWidth: 2, title: 'SMA 50', crosshairMarkerVisible: false });
+        }
+        
+        seriesRef.current = { main: mainSeries, volume: volumeSeries, sma14, sma50 };
+
+        return () => { 
+            chart.remove(); 
+        };
+    }, [type, showVolume, showIndicators]);
+
+    useEffect(() => {
+        if (!seriesRef.current || !seriesRef.current.main || !data || data.length === 0) return;
+        
+        seriesRef.current.main.setData(data);
+        
+        if (showVolume && seriesRef.current.volume) {
+            const volData = data.map(d => ({
+                time: d.time,
+                value: typeof d.volume === 'number' ? d.volume : Math.abs(d.close - d.open) * (Math.random()*500 + 100), 
+                color: d.close >= d.open ? 'rgba(38, 166, 154, 0.4)' : 'rgba(239, 83, 80, 0.4)'
+            }));
+            seriesRef.current.volume.setData(volData);
+        }
+        
+        if (showIndicators && seriesRef.current.sma14) {
+            const getSMA = (period) => {
+                const sData = [];
+                for(let i=0; i<data.length; i++) {
+                    if(i < period - 1) continue;
+                    let sum = 0;
+                    for(let j=0; j<period; j++) sum += data[i-j].close;
+                    sData.push({ time: data[i].time, value: sum/period });
+                }
+                return sData;
+            };
+            seriesRef.current.sma14.setData(getSMA(14));
+            seriesRef.current.sma50.setData(getSMA(50));
+        }
+    }, [data, showVolume, showIndicators]);
+
+    return <div ref={chartContainerRef} style={{ width: '100%', height: '100%', position: 'relative' }} />;
+};
+
+const OrderBook = ({ symbol, livePrice }) => {
+    const [bids, setBids] = useState([]);
+    const [asks, setAsks] = useState([]);
+    useEffect(() => {
+        if(!livePrice) return;
+        const generate = () => {
+            const newBids = [];
+            const newAsks = [];
+            let currentBid = livePrice - (livePrice * 0.0005);
+            let currentAsk = livePrice + (livePrice * 0.0005);
+            for(let i=0; i<5; i++) {
+                newBids.push({ price: currentBid, qty: Math.floor(Math.random() * 500) + 10 });
+                newAsks.push({ price: currentAsk, qty: Math.floor(Math.random() * 500) + 10 });
+                currentBid -= (currentBid * 0.0002);
+                currentAsk += (currentAsk * 0.0002);
+            }
+            setBids(newBids); setAsks(newAsks);
+        };
+        generate();
+        const intv = setInterval(generate, 1500);
+        return () => clearInterval(intv);
+    }, [livePrice]);
+
+    if(!livePrice) return null;
+    return (
+        <div className="bg-[#0f172a] rounded overflow-hidden border border-slate-800 text-xs w-48 shrink-0 flex flex-col h-full font-mono">
+            <div className="bg-slate-900 px-3 py-1.5 font-bold border-b border-slate-800 text-slate-300 flex justify-between"><span>Price</span><span>Qty</span></div>
+            <div className="flex-1 flex flex-col justify-between p-1.5">
+                <div className="space-y-0.5 relative">
+                    {asks.slice().reverse().map((a, i) => (
+                        <div key={i} className="flex justify-between text-danger relative group h-5 items-center px-1">
+                           <div className="absolute right-0 top-0 bottom-0 bg-danger/10" style={{width: `${(a.qty/500)*100}%`}}></div>
+                           <span className="relative z-10">{a.price.toFixed(2)}</span>
+                           <span className="relative z-10">{a.qty}</span>
+                        </div>
+                    ))}
+                </div>
+                <div className="py-1.5 text-center text-sm font-bold text-white border-y border-slate-800 my-1 bg-slate-900/50">
+                    ₹{livePrice.toFixed(2)}
+                </div>
+                <div className="space-y-0.5 relative">
+                    {bids.map((b, i) => (
+                        <div key={i} className="flex justify-between text-success relative group h-5 items-center px-1">
+                           <div className="absolute left-0 top-0 bottom-0 bg-success/10" style={{width: `${(b.qty/500)*100}%`}}></div>
+                           <span className="relative z-10">{b.price.toFixed(2)}</span>
+                           <span className="relative z-10">{b.qty}</span>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+};
 
 // API Helper
 const MUTUAL_FUNDS = ["PARAGPARIKH", "QUANTUM", "SBISMALL", "MIRAEASSET", "HDFCMIDCAP", "NIPPONIND", "AXISBLUECHIP", "SBIBLUECHIP", "ICICIPRU", "MOTILALOSWAL", "KOTAKSMALL", "UTINIFTY", "DSPMIDCAP", "FRANKLININD", "TATAELSS"];
@@ -136,12 +266,20 @@ const Dashboard = () => {
     const [priceHistory, setPriceHistory] = useState({});
     const [portfolioHistory, setPortfolioHistory] = useState([]);
     const [userStats, setUserStats] = useState({ pnl: 0, pnlPerc: 0 });
+    const [watchlist, setWatchlist] = useState([]);
+    const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+    const handleTabChange = (tab) => {
+        setActiveTab(tab);
+        setIsSidebarOpen(false);
+    };
+    
+    // Auto-fetch helper
     const [newsFeed, setNewsFeed] = useState([
         { headline: "[Neutral] Market opens with steady volume.", sentiment: "Neutral" }
     ]);
     const [wallet, setWallet] = useState({ balance: 0 });
     const [portfolio, setPortfolio] = useState([]);
-    const [watchlist, setWatchlist] = useState([]);
     const [orders, setOrders] = useState([]);
     const [activeTab, setActiveTab] = useState('market');
     const [notifications, setNotifications] = useState([]);
@@ -178,11 +316,25 @@ const Dashboard = () => {
                 setLivePrices(prev => ({ ...prev, ...msg.data }));
                 setPriceHistory(prev => {
                     const newHist = { ...prev };
-                    const now = new Date().toLocaleTimeString();
-                    for (const symbol in msg.data) {
+                    const nowSec = Math.floor(Date.now() / 1000);
+                    for (const symbol in msg.candles) {
                         if (!newHist[symbol]) newHist[symbol] = [];
-                        newHist[symbol].push({ time: now, price: msg.data[symbol] });
-                        if (newHist[symbol].length > 60) newHist[symbol].shift();
+                        const candle = msg.candles[symbol];
+                        const newCandle = {
+                            time: nowSec,
+                            open: candle.open,
+                            high: candle.high,
+                            low: candle.low,
+                            close: candle.close,
+                            value: candle.close
+                        };
+                        const lst = newHist[symbol];
+                        if (lst.length > 0 && lst[lst.length - 1].time === nowSec) {
+                            lst[lst.length - 1] = newCandle;
+                        } else {
+                            lst.push(newCandle);
+                        }
+                        if (lst.length > 100) lst.shift();
                     }
                     return newHist;
                 });
@@ -229,8 +381,16 @@ const Dashboard = () => {
             totalCurrent += currentP * item.quantity;
             totalInvested += item.avg_price * item.quantity;
         });
-        const now = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-        setPortfolioHistory(prev => [...prev, { time: now, value: totalCurrent}].slice(-60));
+        const nowSec = Math.floor(Date.now() / 1000);
+        setPortfolioHistory(prev => {
+            const lst = [...prev];
+            if (lst.length > 0 && lst[lst.length - 1].time === nowSec) {
+                lst[lst.length - 1] = { time: nowSec, value: totalCurrent };
+            } else {
+                lst.push({ time: nowSec, value: totalCurrent });
+            }
+            return lst.slice(-100);
+        });
         
         const pnl = totalCurrent - totalInvested;
         const pnlPerc = totalInvested ? (pnl / totalInvested) * 100 : 0;
@@ -247,48 +407,62 @@ const Dashboard = () => {
     };
 
     return (
-        <div className="min-h-screen flex bg-darker text-slate-200">
+        <div className="h-screen flex bg-darker text-slate-200 overflow-hidden relative w-full">
+            {/* Mobile Sidebar Overlay */}
+            {isSidebarOpen && <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden transition-opacity" onClick={() => setIsSidebarOpen(false)}></div>}
+            
             {/* Sidebar */}
-            <div className="w-64 bg-dark border-r border-slate-800 p-4 flex flex-col shrink-0 flex-none h-screen overflow-y-auto hidden md:flex">
-                <h1 className="text-2xl font-bold text-primary mb-8 flex items-center">
-                    <i data-lucide="activity" className="mr-2"></i> Trading
-                </h1>
+            <div className={`fixed inset-y-0 left-0 z-50 w-72 bg-dark border-r border-slate-800 p-4 flex flex-col shrink-0 h-full overflow-y-auto transform transition-transform duration-300 ease-in-out md:relative md:w-64 md:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                <div className="flex justify-between items-center mb-8">
+                    <h1 className="text-2xl font-bold text-primary flex items-center">
+                        <i data-lucide="activity" className="mr-2"></i> Trading
+                    </h1>
+                    <button onClick={() => setIsSidebarOpen(false)} className="md:hidden text-slate-400 hover:text-white p-2">
+                        <i data-lucide="x" className="w-6 h-6"></i>
+                    </button>
+                </div>
                 
-                <nav className="flex-1 space-y-2">
-                    <button onClick={() => setActiveTab('market')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='market' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                <nav className="flex-1 space-y-1 overflow-y-auto pb-4 custom-scrollbar">
+                    <button onClick={() => handleTabChange('market')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='market' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="trending-up" className="mr-3"></i> Market
                     </button>
-                    <button onClick={() => setActiveTab('mutual_funds')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='mutual_funds' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                    <button onClick={() => handleTabChange('mutual_funds')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='mutual_funds' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="landmark" className="mr-3"></i> Mutual Funds
                     </button>
-                    <button onClick={() => setActiveTab('crypto')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='crypto' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                    <button onClick={() => handleTabChange('crypto')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='crypto' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="bitcoin" className="mr-3"></i> Crypto
                     </button>
-                    <button onClick={() => setActiveTab('bots')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='bots' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                    <button onClick={() => handleTabChange('bots')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='bots' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="cpu" className="mr-3"></i> Auto-DCA Bots
                     </button>
-                    <button onClick={() => setActiveTab('leaderboard')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='leaderboard' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                    <button onClick={() => handleTabChange('leaderboard')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='leaderboard' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="trophy" className="mr-3"></i> Leaderboard
                     </button>
-                    <button onClick={() => setActiveTab('profile')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='profile' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                    <button onClick={() => handleTabChange('profile')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='profile' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="user" className="mr-3"></i> Trader Profile
                     </button>
-                    <button onClick={() => setActiveTab('alerts')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='alerts' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                    <button onClick={() => handleTabChange('alerts')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='alerts' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="bell" className="mr-3"></i> Price Alerts
                     </button>
-                    <button onClick={() => setActiveTab('derivatives')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='derivatives' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                    <button onClick={() => handleTabChange('derivatives')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='derivatives' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="zap" className="mr-3"></i> Options & Futures
                     </button>
-                    <button onClick={() => setActiveTab('watchlist')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='watchlist' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                    <button onClick={() => handleTabChange('watchlist')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='watchlist' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="star" className="mr-3"></i> Watchlist
                     </button>
-                    <button onClick={() => setActiveTab('portfolio')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='portfolio' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                    <button onClick={() => handleTabChange('portfolio')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='portfolio' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="pie-chart" className="mr-3"></i> Portfolio
                     </button>
-                    <button onClick={() => setActiveTab('orders')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='orders' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                    <button onClick={() => handleTabChange('orders')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='orders' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="list" className="mr-3"></i> Orders
                     </button>
-                    <button onClick={() => setActiveTab('wallet')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='wallet' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                    <button onClick={() => handleTabChange('pro_terminal')} className={`w-full flex items-center p-3 rounded-lg text-left transition font-bold shadow-lg mt-4 ${activeTab==='pro_terminal' ? 'bg-primary/20 text-white border border-primary/50' : 'bg-slate-900 border border-slate-800 text-primary hover:bg-slate-800'}`}>
+                        <i data-lucide="layout-grid" className="mr-3 text-primary"></i> PRO Terminal
+                    </button>
+                    <button onClick={() => handleTabChange('ipo')} className={`w-full flex items-center p-3 rounded-lg text-left transition font-bold border ${activeTab==='ipo' ? 'bg-slate-800/80 text-white border-yellow-500/50' : 'bg-dark border-dashed border-slate-700 text-yellow-500/80 hover:border-yellow-500/50'}`}>
+                        <i data-lucide="rocket" className="mr-3 text-yellow-500"></i> IPO Center
+                    </button>
+                    <button onClick={() => handleTabChange('wallet')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='wallet' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                         <i data-lucide="wallet" className="mr-3"></i> Wallet (₹{wallet.balance.toFixed(2)})
                     </button>
                 </nav>
@@ -302,16 +476,21 @@ const Dashboard = () => {
             </div>
 
             {/* Main Content */}
-            <div className="flex-1 flex flex-col h-screen overflow-hidden">
-                <header className="h-16 border-b border-slate-800 bg-dark flex flex-col md:flex-row md:items-center px-6 justify-between gap-4 py-2 md:py-0">
-                    <h2 className="text-xl font-semibold capitalize whitespace-nowrap hidden md:block">{activeTab.replace('_', ' ')}</h2>
+            <div className="flex-1 flex flex-col h-screen overflow-hidden min-w-0">
+                <header className="min-h-[56px] md:h-16 border-b border-slate-800 bg-dark flex items-center px-4 md:px-6 shrink-0 relative z-30 justify-between">
+                    <div className="flex items-center gap-3">
+                        <button onClick={() => setIsSidebarOpen(true)} className="md:hidden text-slate-400 hover:text-white p-1 focus:outline-none">
+                            <i data-lucide="menu" className="w-6 h-6"></i>
+                        </button>
+                        <h2 className="text-lg md:text-xl font-semibold capitalize whitespace-nowrap w-24 sm:w-auto overflow-hidden text-ellipsis">{activeTab.replace('_', ' ')}</h2>
+                    </div>
                     
                     {/* News Ticker Bar */}
                     {newsFeed.length > 0 && (
-                        <div className="flex-1 md:mx-4 mx-0 bg-slate-900 border border-slate-700/50 rounded-full py-1.5 px-4 overflow-hidden flex items-center gap-4 shadow-inner mt-2 md:mt-0">
-                            <i data-lucide="radio" className="text-danger animate-pulse w-4 h-4 shrink-0"></i>
-                            <div className="flex-1 overflow-hidden relative h-5">
-                                <div className="absolute whitespace-nowrap text-sm flex gap-12 font-medium" style={{ animation: "marquee 25s linear infinite" }}>
+                        <div className="flex-1 max-w-full md:mx-4 bg-slate-900 border border-slate-700/50 rounded-full py-1.5 px-3 md:px-4 overflow-hidden flex items-center gap-2 md:gap-4 shadow-inner min-w-0 absolute top-[60px] left-4 right-4 sm:relative sm:top-0 sm:left-0 sm:right-0 z-20">
+                            <i data-lucide="radio" className="text-danger animate-pulse w-3 h-3 md:w-4 md:h-4 shrink-0"></i>
+                            <div className="flex-1 overflow-hidden relative h-4 md:h-5">
+                                <div className="absolute whitespace-nowrap text-[11px] md:text-sm flex gap-8 md:gap-12 font-medium" style={{ animation: "marquee 25s linear infinite" }}>
                                     {newsFeed.map((news, i) => (
                                         <span key={i} className={news.sentiment === 'Bullish' ? 'text-success' : news.sentiment === 'Bearish' ? 'text-danger' : 'text-slate-300'}>
                                             {news.headline}
@@ -322,25 +501,27 @@ const Dashboard = () => {
                         </div>
                     )}
 
-                    <div className="flex gap-4 items-center shrink-0 ml-auto hidden md:flex">
-                        <div className="bg-slate-900 rounded-full px-4 py-1.5 border border-slate-700 font-mono text-sm whitespace-nowrap flex items-center gap-2 text-primary">
-                            <i data-lucide="wallet" className="w-4 h-4"></i> ₹{wallet.balance.toFixed(2)}
+                    <div className="flex items-center shrink-0 ml-auto gap-3">
+                        <div className="bg-slate-900 rounded-full px-3 py-1.5 md:px-4 md:py-1.5 border border-slate-700 font-mono text-xs md:text-sm whitespace-nowrap flex items-center gap-2 text-primary">
+                            <i data-lucide="wallet" className="w-3.5 h-3.5 md:w-4 md:h-4 hidden sm:block"></i> ₹{(wallet.balance || 0).toFixed(2)}
                         </div>
                     </div>
                 </header>
                 
-                <main className="flex-1 overflow-y-auto p-6 bg-darker">
+                <main className={`flex-1 overflow-y-auto p-3 md:p-6 bg-darker ${newsFeed.length > 0 ? 'pt-14 sm:pt-4 md:pt-6' : ''}`}>
                     {activeTab === 'market' && <MarketTab livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} filterType="STOCKS" />}
                     {activeTab === 'mutual_funds' && <MarketTab livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} filterType="MUTUAL_FUNDS" />}
                     {activeTab === 'crypto' && <MarketTab livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} filterType="CRYPTO" />}
                     {activeTab === 'bots' && <BotsTab livePrices={livePrices} token={token} />}
-                    {activeTab === 'leaderboard' && <LeaderboardTab userStats={userStats} userEmail={user.email} />}
+                    {activeTab === 'leaderboard' && <LeaderboardTab userStats={userStats} userEmail={user.email} token={token} />}
                     {activeTab === 'profile' && <ProfileTab user={user} token={token} />}
                     {activeTab === 'alerts' && <AlertsTab token={token} />}
                     {activeTab === 'derivatives' && <DerivativesTab token={token} livePrices={livePrices} />}
                     {activeTab === 'watchlist' && <WatchlistTab watchlist={watchlist} livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} />}
                     {activeTab === 'portfolio' && <PortfolioTab portfolio={portfolio} livePrices={livePrices} token={token} portfolioHistory={portfolioHistory} />}
                     {activeTab === 'orders' && <OrdersTab orders={orders} onRefresh={loadData} token={token} />}
+                    {activeTab === 'pro_terminal' && <ProTerminalTab livePrices={livePrices} priceHistory={priceHistory} />}
+                    {activeTab === 'ipo' && <IPOTab wallet={wallet} token={token} />}
                     {activeTab === 'wallet' && <WalletTab balance={wallet.balance} token={token} />}
                 </main>
 
@@ -369,9 +550,14 @@ const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "S
     const [error, setError] = useState("");
     const [aiAnalysis, setAiAnalysis] = useState("");
     const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [stopLoss, setStopLoss] = useState("");
+    const [takeProfit, setTakeProfit] = useState("");
+    const [trailingStop, setTrailingStop] = useState(false);
+    const [showVolume, setShowVolume] = useState(true);
+    const [showIndicators, setShowIndicators] = useState(false);
 
-    // Reset AI state when modal closes
-    useEffect(() => { if (!selectedStock) setAiAnalysis(""); }, [selectedStock]);
+    // Reset state when modal closes
+    useEffect(() => { if (!selectedStock) { setAiAnalysis(""); setStopLoss(""); setTakeProfit(""); setTrailingStop(false); } }, [selectedStock]);
 
     const handleAnalyze = async () => {
         setIsAnalyzing(true); setAiAnalysis("");
@@ -391,6 +577,9 @@ const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "S
                 body.price = parseFloat(limitPrice);
                 if (!body.price || isNaN(body.price) || body.price <= 0) throw new Error("Valid limit price required");
             }
+            if (stopLoss) body.stop_loss_price = parseFloat(stopLoss);
+            if (takeProfit) body.take_profit_price = parseFloat(takeProfit);
+            if (trailingStop) body.trailing_stop_active = true;
             await apiFetch("/trade/order", "POST", body, token);
             setSelectedStock(null);
         } catch (err) { setError(err.message); }
@@ -419,22 +608,8 @@ const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "S
                             </button>
                         </div>
                         
-                        <div className="h-16 w-full -ml-2 pointer-events-none">
-                            {ComposedChart && ResponsiveContainer && Bar && Cell && YAxis ? (
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <ComposedChart data={priceHistory[symbol] || []}>
-                                        <Bar dataKey={d => d.high ? [d.low, d.high] : null} barSize={1} fill="#64748b" isAnimationActive={false} />
-                                        <Bar dataKey={d => d.open ? [Math.min(d.open, d.close), Math.max(d.open, d.close)] : null} barSize={5} isAnimationActive={false}>
-                                            {(priceHistory[symbol] || []).map((entry, index) => (
-                                                <Cell key={`cell-${index}`} fill={entry.close >= entry.open ? '#22c55e' : '#ef4444'} />
-                                            ))}
-                                        </Bar>
-                                        <YAxis domain={['dataMin', 'dataMax']} hide />
-                                    </ComposedChart>
-                                </ResponsiveContainer>
-                            ) : (
-                                <div className="text-xs text-slate-500 pt-4 text-center">Chart unavailable</div>
-                            )}
+                        <div className="h-20 w-full pointer-events-none mt-2">
+                            <RealtimeChart data={priceHistory[symbol] || []} type="line" height={80} />
                         </div>
 
                         <div className="text-2xl font-mono mt-auto pt-2">₹{price.toFixed(2)}</div>
@@ -444,42 +619,35 @@ const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "S
 
             {/* Trade Modal */}
             {selectedStock && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-                    <div className="bg-dark p-6 rounded-xl w-full max-w-sm border border-slate-700 shadow-2xl">
-                        <div className="flex justify-between items-center mb-4">
-                            <h2 className="text-xl font-bold">{selectedStock}</h2>
-                            <button onClick={()=>setSelectedStock(null)} className="text-slate-400 hover:text-white">&times;</button>
-                        </div>
-                        <div className="text-3xl font-mono mb-4 text-center text-primary">₹{(livePrices[selectedStock] || 0).toFixed(2)}</div>
-                        
-                        <div className="h-32 w-full mb-6 -ml-2">
-                            {ComposedChart && ResponsiveContainer && Bar && Cell && YAxis && XAxis && Tooltip ? (
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <ComposedChart data={priceHistory[selectedStock] || []}>
-                                        <XAxis dataKey="time" hide />
-                                        <YAxis domain={['dataMin', 'dataMax']} hide />
-                                        <Tooltip 
-                                            contentStyle={{backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px'}}
-                                            itemStyle={{color: '#e2e8f0', fontWeight: 'bold'}}
-                                            labelStyle={{color: '#94a3b8', fontSize: '12px'}}
-                                            cursor={{fill: '#334155', opacity: 0.4}}
-                                        />
-                                        <Bar dataKey={d => d.high ? [d.low, d.high] : null} barSize={2} fill="#64748b" isAnimationActive={false} />
-                                        <Bar dataKey={d => d.open ? [Math.min(d.open, d.close), Math.max(d.open, d.close)] : null} barSize={8} isAnimationActive={false}>
-                                            {(priceHistory[selectedStock] || []).map((entry, index) => (
-                                                <Cell key={`cell-${index}`} fill={entry.close >= entry.open ? '#22c55e' : '#ef4444'} />
-                                            ))}
-                                        </Bar>
-                                    </ComposedChart>
-                                </ResponsiveContainer>
-                            ) : <div className="text-slate-500 text-sm text-center pt-10">Chart loading...</div>}
-                        </div>
-
-                        {error && <div className="text-danger text-sm mb-4">{error}</div>}
-
-                        <div className="mb-6 space-y-4">
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center z-[100] p-0 md:p-4 transition-all">
+                    <div className="bg-dark p-4 md:p-6 rounded-t-2xl md:rounded-xl w-full max-w-2xl border-t md:border border-slate-700 shadow-2xl max-h-[92vh] md:max-h-[95vh] overflow-y-auto custom-scrollbar mt-auto md:mt-0">
+                        <div className="flex justify-between items-start mb-4 border-b border-slate-800 pb-3">
                             <div>
-                                <label className="text-sm text-slate-400 block mb-2">Order Type</label>
+                                <h2 className="text-xl md:text-2xl font-bold">{selectedStock}</h2>
+                                <div className="text-2xl md:text-3xl font-mono text-primary mt-1">₹{(livePrices[selectedStock] || 0).toFixed(2)}</div>
+                            </div>
+                            <button onClick={()=>setSelectedStock(null)} className="text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-full w-8 h-8 flex items-center justify-center transition focus:outline-none">&times;</button>
+                        </div>
+                        
+                        <div className="flex gap-4 mb-2">
+                            <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer hover:text-primary"><input type="checkbox" checked={showIndicators} onChange={e=>setShowIndicators(e.target.checked)} className="rounded bg-slate-900 border-slate-700" /> SMA 14/50</label>
+                            <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer hover:text-primary"><input type="checkbox" checked={showVolume} onChange={e=>setShowVolume(e.target.checked)} className="rounded bg-slate-900 border-slate-700" /> Volume Profile</label>
+                        </div>
+                        <div className="flex flex-col md:flex-row gap-4 mb-6">
+                            <div className="h-48 flex-1 relative border border-slate-800 rounded bg-[#0f172a]/50">
+                                <RealtimeChart data={priceHistory[selectedStock] || []} type="candlestick" height={192} showVolume={showVolume} showIndicators={showIndicators} />
+                            </div>
+                            <div className="h-48 w-full md:w-48 shrink-0">
+                                <OrderBook symbol={selectedStock} livePrice={livePrices[selectedStock]} />
+                            </div>
+                        </div>
+
+                        {error && <div className="text-danger text-sm mb-4 bg-danger/10 p-3 rounded">{error}</div>}
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="text-sm text-slate-400 block mb-2">Order Type</label>
                                 <div className="flex bg-slate-800 rounded overflow-hidden">
                                     <button onClick={()=>setOrderType("MARKET")} className={`flex-1 py-2 text-sm font-bold ${orderType==='MARKET' ? 'bg-primary text-white' : 'text-slate-400 hover:text-white'}`}>MARKET</button>
                                     <button onClick={()=>setOrderType("LIMIT")} className={`flex-1 py-2 text-sm font-bold ${orderType==='LIMIT' ? 'bg-primary text-white' : 'text-slate-400 hover:text-white'}`}>LIMIT</button>
@@ -505,15 +673,34 @@ const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "S
                                     {isAnalyzing ? "AI is analyzing..." : "Get AI Analysis"}
                                 </button>
                             )}
-
+                            
                             <div>
                                 <label className="text-sm text-slate-400 block mb-2">Quantity</label>
                                 <input type="number" min="1" value={quantity} onChange={e=>setQuantity(e.target.value)}
                                     className="w-full bg-slate-900 border border-slate-700 rounded px-4 py-3 text-white focus:outline-none focus:border-primary text-lg" />
                             </div>
                         </div>
+                            
+                        <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 space-y-4">
+                            <h3 className="text-sm font-bold text-slate-300 border-b border-slate-700 pb-2">Advanced Protection Brackets</h3>
+                            <div>
+                                <label className="text-xs text-slate-400 block mb-1">Stop Loss (₹)</label>
+                                <input type="number" min="0.01" step="0.01" value={stopLoss} onChange={e=>setStopLoss(e.target.value)}
+                                    className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-white focus:outline-none focus:border-danger text-sm" placeholder="Optional" />
+                            </div>
+                            <div>
+                                <label className="text-xs text-slate-400 block mb-1">Take Profit (₹)</label>
+                                <input type="number" min="0.01" step="0.01" value={takeProfit} onChange={e=>setTakeProfit(e.target.value)}
+                                    className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-white focus:outline-none focus:border-success text-sm" placeholder="Optional" />
+                            </div>
+                            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer pt-2">
+                                <input type="checkbox" checked={trailingStop} onChange={e=>setTrailingStop(e.target.checked)} className="rounded bg-slate-900 border-slate-700 cursor-pointer" />
+                                Enable Trailing Stop
+                            </label>
+                        </div>
+                    </div>
                         
-                        <div className="flex gap-4">
+                    <div className="flex gap-4 mt-6 pt-4 border-t border-slate-800">
                             <button onClick={()=>handleTrade("BUY")} className="flex-1 bg-success hover:bg-emerald-500 text-white font-bold py-3 rounded transition uppercase">Buy</button>
                             <button onClick={()=>handleTrade("SELL")} className="flex-1 bg-danger hover:bg-red-500 text-white font-bold py-3 rounded transition uppercase">Sell</button>
                         </div>
@@ -532,8 +719,13 @@ const WatchlistTab = ({ watchlist, livePrices, priceHistory, token, onRefresh })
     const [error, setError] = useState("");
     const [aiAnalysis, setAiAnalysis] = useState("");
     const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [stopLoss, setStopLoss] = useState("");
+    const [takeProfit, setTakeProfit] = useState("");
+    const [trailingStop, setTrailingStop] = useState(false);
+    const [showVolume, setShowVolume] = useState(true);
+    const [showIndicators, setShowIndicators] = useState(false);
 
-    useEffect(() => { if (!selectedStock) setAiAnalysis(""); }, [selectedStock]);
+    useEffect(() => { if (!selectedStock) { setAiAnalysis(""); setStopLoss(""); setTakeProfit(""); setTrailingStop(false); } }, [selectedStock]);
 
     const handleAnalyze = async () => {
         setIsAnalyzing(true); setAiAnalysis("");
@@ -563,6 +755,9 @@ const WatchlistTab = ({ watchlist, livePrices, priceHistory, token, onRefresh })
                 body.price = parseFloat(limitPrice);
                 if (!body.price || isNaN(body.price) || body.price <= 0) throw new Error("Valid limit price required");
             }
+            if (stopLoss) body.stop_loss_price = parseFloat(stopLoss);
+            if (takeProfit) body.take_profit_price = parseFloat(takeProfit);
+            if (trailingStop) body.trailing_stop_active = true;
             await apiFetch("/trade/order", "POST", body, token);
             setSelectedStock(null);
             if(onRefresh) onRefresh();
@@ -585,20 +780,8 @@ const WatchlistTab = ({ watchlist, livePrices, priceHistory, token, onRefresh })
                                     <i data-lucide="star" className="w-4 h-4 fill-yellow-400"></i>
                                 </button>
                             </div>
-                            <div className="h-16 w-full -ml-2 pointer-events-none">
-                                {ComposedChart && ResponsiveContainer && Bar && Cell && YAxis ? (
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <ComposedChart data={priceHistory[symbol] || []}>
-                                            <Bar dataKey={d => d.high ? [d.low, d.high] : null} barSize={1} fill="#64748b" isAnimationActive={false} />
-                                            <Bar dataKey={d => d.open ? [Math.min(d.open, d.close), Math.max(d.open, d.close)] : null} barSize={5} isAnimationActive={false}>
-                                                {(priceHistory[symbol] || []).map((entry, index) => (
-                                                    <Cell key={`cell-${index}`} fill={entry.close >= entry.open ? '#22c55e' : '#ef4444'} />
-                                                ))}
-                                            </Bar>
-                                            <YAxis domain={['dataMin', 'dataMax']} hide />
-                                        </ComposedChart>
-                                    </ResponsiveContainer>
-                                ) : <div className="text-xs text-slate-500 pt-4 text-center">Chart unavailable</div>}
+                            <div className="h-20 w-full pointer-events-none mt-2">
+                                <RealtimeChart data={priceHistory[symbol] || []} type="line" height={80} />
                             </div>
                             <div className="text-2xl font-mono mt-auto pt-2">₹{price.toFixed(2)}</div>
                         </div>
@@ -607,46 +790,40 @@ const WatchlistTab = ({ watchlist, livePrices, priceHistory, token, onRefresh })
             </div>
 
             {selectedStock && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100]">
-                    <div className="bg-dark p-6 rounded-xl w-full max-w-sm border border-slate-700 shadow-2xl">
-                        <div className="flex justify-between items-center mb-4">
-                            <h2 className="text-xl font-bold">{selectedStock}</h2>
-                            <button onClick={()=>setSelectedStock(null)} className="text-slate-400 hover:text-white">&times;</button>
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center z-[100] p-0 md:p-4 transition-all">
+                    <div className="bg-dark p-4 md:p-6 rounded-t-2xl md:rounded-xl w-full max-w-2xl border-t md:border border-slate-700 shadow-2xl max-h-[92vh] md:max-h-[95vh] overflow-y-auto custom-scrollbar mt-auto md:mt-0">
+                        <div className="flex justify-between items-start mb-4 border-b border-slate-800 pb-3">
+                            <div>
+                                <h2 className="text-xl md:text-2xl font-bold">{selectedStock}</h2>
+                                <div className="text-2xl md:text-3xl font-mono text-primary mt-1">₹{(livePrices[selectedStock] || 0).toFixed(2)}</div>
+                            </div>
+                            <button onClick={()=>setSelectedStock(null)} className="text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-full w-8 h-8 flex items-center justify-center transition focus:outline-none">&times;</button>
                         </div>
-                        <div className="text-3xl font-mono mb-4 text-center text-primary">₹{(livePrices[selectedStock] || 0).toFixed(2)}</div>
                         
-                        <div className="h-32 w-full mb-6 -ml-2">
-                            {ComposedChart && ResponsiveContainer && Bar && Cell && YAxis && XAxis && Tooltip ? (
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <ComposedChart data={priceHistory[selectedStock] || []}>
-                                        <XAxis dataKey="time" hide />
-                                        <YAxis domain={['dataMin', 'dataMax']} hide />
-                                        <Tooltip 
-                                            contentStyle={{backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px'}}
-                                            itemStyle={{color: '#e2e8f0', fontWeight: 'bold'}}
-                                            labelStyle={{color: '#94a3b8', fontSize: '12px'}}
-                                            cursor={{fill: '#334155', opacity: 0.4}}
-                                        />
-                                        <Bar dataKey={d => d.high ? [d.low, d.high] : null} barSize={2} fill="#64748b" isAnimationActive={false} />
-                                        <Bar dataKey={d => d.open ? [Math.min(d.open, d.close), Math.max(d.open, d.close)] : null} barSize={8} isAnimationActive={false}>
-                                            {(priceHistory[selectedStock] || []).map((entry, index) => (
-                                                <Cell key={`cell-${index}`} fill={entry.close >= entry.open ? '#22c55e' : '#ef4444'} />
-                                            ))}
-                                        </Bar>
-                                    </ComposedChart>
-                                </ResponsiveContainer>
-                            ) : <div className="text-slate-500 text-sm text-center pt-10">Chart loading...</div>}
+                        <div className="flex gap-4 mb-2">
+                            <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer hover:text-primary"><input type="checkbox" checked={showIndicators} onChange={e=>setShowIndicators(e.target.checked)} className="rounded bg-slate-900 border-slate-700" /> SMA 14/50</label>
+                            <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer hover:text-primary"><input type="checkbox" checked={showVolume} onChange={e=>setShowVolume(e.target.checked)} className="rounded bg-slate-900 border-slate-700" /> Volume Profile</label>
+                        </div>
+                        <div className="flex flex-col md:flex-row gap-4 mb-6">
+                            <div className="h-48 flex-1 relative border border-slate-800 rounded bg-[#0f172a]/50">
+                                <RealtimeChart data={priceHistory[selectedStock] || []} type="candlestick" height={192} showVolume={showVolume} showIndicators={showIndicators} />
+                            </div>
+                            <div className="h-48 w-full md:w-48 shrink-0">
+                                <OrderBook symbol={selectedStock} livePrice={livePrices[selectedStock]} />
+                            </div>
                         </div>
 
-                        {error && <div className="text-danger text-sm mb-4">{error}</div>}
-                        <div className="mb-6 space-y-4">
-                            <div>
-                                <label className="text-sm text-slate-400 block mb-2">Order Type</label>
-                                <div className="flex bg-slate-800 rounded overflow-hidden">
-                                    <button onClick={()=>setOrderType("MARKET")} className={`flex-1 py-2 text-sm font-bold ${orderType==='MARKET' ? 'bg-primary text-white' : 'text-slate-400 hover:text-white'}`}>MARKET</button>
-                                    <button onClick={()=>setOrderType("LIMIT")} className={`flex-1 py-2 text-sm font-bold ${orderType==='LIMIT' ? 'bg-primary text-white' : 'text-slate-400 hover:text-white'}`}>LIMIT</button>
+                        {error && <div className="text-danger text-sm mb-4 bg-danger/10 p-3 rounded">{error}</div>}
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="text-sm text-slate-400 block mb-2">Order Type</label>
+                                    <div className="flex bg-slate-800 rounded overflow-hidden">
+                                        <button onClick={()=>setOrderType("MARKET")} className={`flex-1 py-2 text-sm font-bold ${orderType==='MARKET' ? 'bg-primary text-white' : 'text-slate-400 hover:text-white'}`}>MARKET</button>
+                                        <button onClick={()=>setOrderType("LIMIT")} className={`flex-1 py-2 text-sm font-bold ${orderType==='LIMIT' ? 'bg-primary text-white' : 'text-slate-400 hover:text-white'}`}>LIMIT</button>
+                                    </div>
                                 </div>
-                            </div>
                             
                             {orderType === "LIMIT" && (
                                 <div>
@@ -674,7 +851,27 @@ const WatchlistTab = ({ watchlist, livePrices, priceHistory, token, onRefresh })
                                     className="w-full bg-slate-900 border border-slate-700 rounded px-4 py-3 text-white focus:outline-none focus:border-primary text-lg" />
                             </div>
                         </div>
-                        <div className="flex gap-4">
+                        
+                        <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 space-y-4">
+                            <h3 className="text-sm font-bold text-slate-300 border-b border-slate-700 pb-2">Advanced Protection Brackets</h3>
+                            <div>
+                                <label className="text-xs text-slate-400 block mb-1">Stop Loss (₹)</label>
+                                <input type="number" min="0.01" step="0.01" value={stopLoss} onChange={e=>setStopLoss(e.target.value)}
+                                    className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-white focus:outline-none focus:border-danger text-sm" placeholder="Optional" />
+                            </div>
+                            <div>
+                                <label className="text-xs text-slate-400 block mb-1">Take Profit (₹)</label>
+                                <input type="number" min="0.01" step="0.01" value={takeProfit} onChange={e=>setTakeProfit(e.target.value)}
+                                    className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-white focus:outline-none focus:border-success text-sm" placeholder="Optional" />
+                            </div>
+                            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer pt-2">
+                                <input type="checkbox" checked={trailingStop} onChange={e=>setTrailingStop(e.target.checked)} className="rounded bg-slate-900 border-slate-700 cursor-pointer" />
+                                Enable Trailing Stop
+                            </label>
+                        </div>
+                    </div>
+                        
+                    <div className="flex gap-4 mt-6 pt-4 border-t border-slate-800">
                             <button onClick={()=>handleTrade("BUY")} className="flex-1 bg-success hover:bg-emerald-500 text-white font-bold py-3 rounded transition uppercase">Buy</button>
                             <button onClick={()=>handleTrade("SELL")} className="flex-1 bg-danger hover:bg-red-500 text-white font-bold py-3 rounded transition uppercase">Sell</button>
                         </div>
@@ -832,21 +1029,12 @@ const PortfolioTab = ({ portfolio, livePrices, token, portfolioHistory }) => {
             {/* Master Portfolio Chart */}
             <div className="bg-dark rounded-xl border border-slate-800 p-6 mb-8 shadow-xl">
                 <h3 className="text-xl font-bold mb-4 flex items-center gap-2"><i data-lucide="trending-up" className="text-primary w-5 h-5"></i> Portfolio Value Tracking</h3>
-                <div className="h-64 w-full -ml-2">
-                    {LineChart && ResponsiveContainer && Line && YAxis && XAxis && Tooltip ? (
-                        <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={portfolioHistory}>
-                                <XAxis dataKey="time" hide />
-                                <YAxis domain={['dataMin', 'dataMax']} hide />
-                                <Tooltip 
-                                    contentStyle={{backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px'}}
-                                    itemStyle={{color: '#3b82f6', fontWeight: 'bold'}}
-                                    labelStyle={{color: '#94a3b8', fontSize: '12px'}}
-                                />
-                                <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={false} isAnimationActive={false} />
-                            </LineChart>
-                        </ResponsiveContainer>
-                    ) : <div className="text-slate-500 text-sm text-center pt-20">Chart loading...</div>}
+                <div className="h-64 w-full relative">
+                    {portfolioHistory.length > 0 ? (
+                        <RealtimeChart data={portfolioHistory} type="line" height={256} />
+                    ) : (
+                        <div className="text-slate-500 text-sm text-center pt-20">Awaiting market ticks...</div>
+                    )}
                 </div>
             </div>
 
@@ -875,13 +1063,16 @@ const PortfolioTab = ({ portfolio, livePrices, token, portfolioHistory }) => {
     );
 };
 
-const LeaderboardTab = ({ userStats, userEmail }) => {
+const LeaderboardTab = ({ userStats, userEmail, token }) => {
     const [traders, setTraders] = useState([]);
+    const [copyTarget, setCopyTarget] = useState(null);
+    const [allocateAmount, setAllocateAmount] = useState("");
     
     useEffect(() => {
         const names = ["Alex Bull", "MoonWalker_99", "WallSt Whale", "HODL Master", "MumbaiTrader", "Dalal King", "Alpha Seeker", "BearHunter", "Quantum Fund", "Retail Legend"];
         const mocked = names.map(name => ({
             name,
+            email: name.toLowerCase().replace(/[^a-z0-9]/g, '') + "@trader.com", // Generate a simple email
             pnlPerc: (Math.random() * 30) - 10,
             pnl: (Math.random() * 50000) - 10000
         }));
@@ -891,17 +1082,33 @@ const LeaderboardTab = ({ userStats, userEmail }) => {
     const allTraders = [...traders, { name: userEmail.split('@')[0] + " (You)", pnlPerc: userStats.pnlPerc || 0, pnl: userStats.pnl || 0, isYou: true }]
         .sort((a, b) => b.pnlPerc - a.pnlPerc);
 
+    const handleCopy = async () => {
+        if(!copyTarget) return;
+        try {
+            const data = await apiFetch("/trade/copy", "POST", {
+                target_user_email: copyTarget.email,
+                allocated_amount: parseFloat(allocateAmount)
+            }, token);
+            alert(data.message);
+            setCopyTarget(null);
+            setAllocateAmount("");
+        } catch (err) {
+            alert(err.message);
+        }
+    };
+
     return (
-        <div className="max-w-4xl mx-auto mt-4">
+        <div className="max-w-5xl mx-auto mt-4">
             <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><i data-lucide="trophy" className="text-primary"></i> Global Leaderboard</h2>
             <div className="bg-dark rounded-xl border border-slate-800 overflow-hidden shadow-xl">
                 <table className="w-full text-left whitespace-nowrap">
-                    <thead className="bg-slate-900/50">
+                    <thead className="bg-slate-900/50 border-b border-slate-800">
                         <tr>
                             <th className="p-4 font-medium text-slate-400 w-16 text-center">Rank</th>
                             <th className="p-4 font-medium text-slate-400">Trader</th>
                             <th className="p-4 font-medium text-slate-400 text-right">Daily P&L</th>
                             <th className="p-4 font-medium text-slate-400 text-right">Return %</th>
+                            <th className="p-4 font-medium text-slate-400 text-right">Action</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800">
@@ -910,18 +1117,46 @@ const LeaderboardTab = ({ userStats, userEmail }) => {
                                 <td className="p-4 text-center font-bold text-slate-400 uppercase">
                                     {idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : `#${idx + 1}`}
                                 </td>
-                                <td className={`p-4 font-bold ${t.isYou ? 'text-white' : 'text-slate-300'}`}>{t.name}</td>
+                                <td className={`p-4 font-bold ${t.isYou ? 'text-white' : 'text-slate-300'}`}>
+                                    {t.name}
+                                    {!t.isYou && <span className="block text-xs font-normal text-slate-500">{t.email}</span>}
+                                </td>
                                 <td className={`p-4 text-right font-mono ${t.pnl >= 0 ? 'text-success' : 'text-danger'}`}>
                                     {t.pnl >= 0 ? '+' : ''}₹{t.pnl.toFixed(2)}
                                 </td>
                                 <td className={`p-4 text-right font-bold ${t.pnlPerc >= 0 ? 'text-success' : 'text-danger'}`}>
                                     {t.pnlPerc >= 0 ? '+' : ''}{t.pnlPerc.toFixed(2)}%
                                 </td>
+                                <td className="p-4 text-right">
+                                    {!t.isYou && (
+                                        <button onClick={()=>setCopyTarget(t)} className="bg-primary/20 hover:bg-primary/40 text-primary border border-primary/50 px-3 py-1 rounded text-xs font-bold uppercase transition focus:outline-none">
+                                            Copy Trades
+                                        </button>
+                                    )}
+                                </td>
                             </tr>
                         ))}
                     </tbody>
                 </table>
             </div>
+
+            {copyTarget && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                    <div className="bg-dark p-6 rounded-xl w-full max-w-sm border border-slate-700 shadow-2xl">
+                        <h3 className="text-xl font-bold mb-2">Mirror Strategy</h3>
+                        <p className="text-slate-400 text-sm mb-6">Automatically duplicate <span className="text-primary font-bold">{copyTarget.name}</span>'s future trades up to your allocated limit. (Submit 0 to unsubscribe)</p>
+                        
+                        <label className="text-sm font-bold text-slate-300 mb-2 block">Max Investment Allocation (₹)</label>
+                        <input type="number" min="0" value={allocateAmount} onChange={e=>setAllocateAmount(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-700 focus:border-primary rounded p-3 text-white outline-none mb-6" placeholder="e.g. 50000" />
+                        
+                        <div className="flex gap-4">
+                            <button onClick={()=>setCopyTarget(null)} className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded transition uppercase">Cancel</button>
+                            <button onClick={handleCopy} className="flex-1 bg-primary hover:bg-blue-600 shadow-lg shadow-primary/30 text-white font-bold py-3 rounded transition uppercase">Confirm</button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
@@ -1310,6 +1545,105 @@ const WalletTab = ({ balance, token }) => {
                 </form>
 
                 {msg && <div className="mt-4 p-3 bg-slate-800 text-slate-300 rounded text-sm text-center border border-slate-700">{msg}</div>}
+            </div>
+        </div>
+    );
+};
+
+const ProTerminalTab = ({ livePrices, priceHistory }) => {
+    const allSymbols = Object.keys(livePrices);
+    const assets = allSymbols.length >= 4 ? allSymbols.slice(0,4) : ["RELIANCE", "TCS", "INFY", "HDFCBANK"];
+
+    return (
+        <div className="h-full flex flex-col absolute inset-0 md:relative md:inset-auto p-4 md:p-0">
+            <div className="flex justify-between items-center mb-4">
+                <div>
+                    <h2 className="text-2xl font-bold flex items-center gap-2 text-white"><i data-lucide="layout-grid" className="text-primary w-6 h-6"></i> Pro Terminal Dashboard</h2>
+                    <p className="text-slate-400 text-sm hidden md:block mt-1">Multi-asset 4-way sync rendering engine.</p>
+                </div>
+                <div className="text-xs text-primary font-bold bg-primary/10 border border-primary/30 px-3 py-1.5 rounded animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.3)]">LIVE MULTI-CHART</div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1 mt-2 min-h-[80vh]">
+                {assets.map((symbol, idx) => (
+                    <div key={idx} className="bg-darker border border-slate-800 hover:border-primary/40 transition rounded-xl flex flex-col p-4 overflow-hidden shadow-2xl relative min-h-[300px]">
+                        <div className="flex justify-between items-center mb-3 z-10">
+                            <h3 className="font-bold text-slate-100 flex items-center gap-2 text-lg"><span className="w-2.5 h-2.5 rounded-full bg-success animate-pulse shadow-[0_0_8px_#22c55e]"></span> {symbol}</h3>
+                            <span className="text-primary font-bold font-mono text-xl bg-slate-900 px-3 py-1 rounded border border-slate-800 shadow-inner">₹{(livePrices[symbol] || 0).toFixed(2)}</span>
+                        </div>
+                        <div className="flex-1 w-full relative mt-0 rounded-lg border border-slate-800 bg-[#0f172a]/30 overflow-hidden">
+                            <RealtimeChart data={priceHistory[symbol] || []} type="candlestick" height={null} showVolume={true} showIndicators={true} />
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+const IPOTab = ({ wallet, token }) => {
+    const [bids, setBids] = useState({});
+    
+    const ipos = [
+        { name: "Neuralink Corp", symbol: "NRLNK", price: 1540, minQty: 10, status: "OPEN", endsIn: "24:00:00", description: "Brain-computer interface technologies." },
+        { name: "SpaceX Exploration", symbol: "SPCX", price: 3200, minQty: 5, status: "OPEN", endsIn: "48:30:00", description: "Aerospace manufacturer and space transport services." },
+        { name: "Stark Industries", symbol: "STARK", price: 8500, minQty: 1, status: "CLOSED", endsIn: "00:00:00", description: "Advanced defense and clean energy tech." }
+    ];
+
+    const handleBid = (symbol, cost) => {
+        if(wallet.balance < cost) return alert("Insufficient funds to place IPO bid!");
+        setBids(prev => ({...prev, [symbol]: true}));
+        alert(`Successfully queued bid for ${symbol}! Allocation results will be announced dynamically.`);
+    };
+
+    return (
+        <div className="max-w-4xl mx-auto md:mt-4">
+            <div className="flex justify-between items-center mb-6">
+                <div>
+                    <h2 className="text-2xl font-bold flex items-center gap-3"><i data-lucide="rocket" className="text-yellow-500 w-8 h-8"></i> IPO Bidding Center</h2>
+                    <p className="mt-2 text-sm text-slate-400">Lock funds to bid for upcoming high-profile mock Initial Public Offerings.</p>
+                </div>
+                <div className="bg-yellow-500/10 text-yellow-500 border border-yellow-500/30 px-3 py-1.5 rounded text-sm font-bold flex items-center gap-2 shadow-[0_0_15px_rgba(234,179,8,0.15)]"><i data-lucide="alert-triangle" className="w-4 h-4"></i> EXTREME VOLATILITY</div>
+            </div>
+
+            <div className="grid gap-5">
+                {ipos.map((ipo, idx) => {
+                    const cost = ipo.price * ipo.minQty;
+                    const hasBid = bids[ipo.symbol];
+                    return (
+                        <div key={idx} className={`bg-dark border rounded-xl p-5 md:p-6 relative overflow-hidden transition shadow-xl ${ipo.status === 'OPEN' ? 'border-slate-700 hover:border-slate-500' : 'border-slate-800 opacity-60'}`}>
+                            {hasBid && <div className="absolute top-0 right-0 bg-success text-white text-[10px] font-bold px-8 py-1 transform translate-x-6 translate-y-3 md:translate-y-4 rotate-45 shadow-lg tracking-widest">BID PLACED</div>}
+                            <div className="flex flex-col md:flex-row justify-between gap-6 md:items-center">
+                                <div className="flex-1">
+                                    <div className="flex items-center gap-3 mb-2">
+                                        <h3 className="text-xl md:text-2xl font-bold text-white">{ipo.name}</h3>
+                                        <span className="bg-slate-900 border border-slate-700 text-slate-300 text-xs px-2 py-0.5 rounded font-mono shadow-inner">{ipo.symbol}</span>
+                                        {ipo.status === 'OPEN' ? <span className="bg-success/20 text-success text-[10px] font-bold px-2 py-0.5 rounded border border-success/30 animate-pulse tracking-wide">LIVE NOW</span> : <span className="bg-danger/10 text-danger text-[10px] font-bold px-2 py-0.5 rounded border border-danger/30">CLOSED</span>}
+                                    </div>
+                                    <p className="text-slate-400 text-sm mb-5 leading-relaxed">{ipo.description}</p>
+                                    
+                                    <div className="flex flex-wrap gap-x-8 gap-y-4 text-sm bg-slate-900/50 p-3 rounded-lg border border-slate-800/80 inline-flex w-full md:w-auto">
+                                        <div><span className="text-slate-500 block text-xs uppercase tracking-wider mb-1">Issue Price</span> <span className="font-mono font-bold text-lg text-white">₹{ipo.price.toLocaleString()}</span></div>
+                                        <div className="border-l border-slate-700 pl-8"><span className="text-slate-500 block text-xs uppercase tracking-wider mb-1">Lot Size</span> <span className="font-bold text-lg text-white">{ipo.minQty} Shares</span></div>
+                                        <div className="border-l border-slate-700 pl-8"><span className="text-slate-500 block text-xs uppercase tracking-wider mb-1">Req. Margin</span> <span className="font-mono font-bold text-lg text-yellow-500">₹{cost.toLocaleString()}</span></div>
+                                    </div>
+                                </div>
+                                
+                                <div className="flex flex-col items-end gap-3 min-w-[200px] border-t md:border-t-0 md:border-l border-slate-800 pt-5 md:pt-0 md:pl-6 mt-2 md:mt-0">
+                                    <div className="text-right w-full flex md:flex-col justify-between md:justify-start items-center md:items-end mb-2 md:mb-0">
+                                        <span className="text-xs text-slate-500 uppercase font-bold tracking-widest block mb-1">Bidding Closes In</span>
+                                        <span className="font-mono text-xl text-slate-300 font-bold bg-darker px-2 py-1 rounded">{ipo.endsIn}</span>
+                                    </div>
+                                    <button 
+                                        disabled={ipo.status !== 'OPEN' || hasBid} 
+                                        onClick={()=>handleBid(ipo.symbol, cost)}
+                                        className={`w-full py-4 rounded font-bold uppercase transition shadow-xl tracking-wider text-sm ${hasBid ? 'bg-slate-800/50 text-success border border-success/30 cursor-not-allowed' : ipo.status !== 'OPEN' ? 'bg-slate-900 text-slate-600 border border-slate-800 cursor-not-allowed' : 'bg-primary hover:bg-blue-600 text-white hover:scale-[1.02] shadow-[0_5px_15px_rgba(59,130,246,0.3)]'}`}>
+                                        {hasBid ? "Allocation Pending" : ipo.status === 'OPEN' ? "Place Bid Now" : "Bidding Closed"}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })}
             </div>
         </div>
     );

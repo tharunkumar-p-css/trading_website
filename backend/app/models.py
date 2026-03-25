@@ -104,6 +104,9 @@ class Order(Base):
     side = Column(Enum(OrderSide))
     quantity = Column(Integer)
     price = Column(Float, nullable=True) # None for MARKET orders
+    stop_loss_price = Column(Float, nullable=True)
+    take_profit_price = Column(Float, nullable=True)
+    trailing_stop_active = Column(Boolean, default=False)
     status = Column(Enum(OrderStatus), default=OrderStatus.PENDING)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
@@ -158,3 +161,12 @@ class OptionContract(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     user = relationship("User", back_populates="options")
+
+class CopySubscription(Base):
+    __tablename__ = "copy_subscriptions"
+    id = Column(Integer, primary_key=True, index=True)
+    subscriber_id = Column(Integer, ForeignKey("users.id"))
+    target_user_id = Column(Integer, ForeignKey("users.id"))
+    allocated_amount = Column(Float, default=0.0)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)

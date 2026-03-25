@@ -59,6 +59,9 @@ class OrderCreate(BaseModel):
     side: OrderSide
     quantity: int
     price: Optional[float] = None
+    stop_loss_price: Optional[float] = None
+    take_profit_price: Optional[float] = None
+    trailing_stop_active: Optional[bool] = False
 
 class OrderResponse(BaseModel):
     id: int
@@ -67,6 +70,9 @@ class OrderResponse(BaseModel):
     side: OrderSide
     quantity: int
     price: Optional[float]
+    stop_loss_price: Optional[float]
+    take_profit_price: Optional[float]
+    trailing_stop_active: Optional[bool]
     status: OrderStatus
     created_at: datetime
     class Config:
@@ -138,3 +144,7 @@ class OptionResponse(BaseModel):
     created_at: datetime
     class Config:
         from_attributes = True
+
+class CopyTradeRequest(BaseModel):
+    target_user_email: str
+    allocated_amount: float

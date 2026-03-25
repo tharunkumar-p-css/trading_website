@@ -4,13 +4,57 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update
 from app.db.session import get_db, AsyncSessionLocal
-from app.models import User, Order, Wallet, Portfolio, Transaction, TransactionType, OrderStatus, OrderType, OrderSide, TradingBot, BotStatus, Achievement, PriceAlert, AlertDir, OptionContract, OptionType
-from app.schemas import OrderCreate, OrderResponse, PortfolioItemResponse, TradingBotCreate, TradingBotResponse, AchievementResponse, PriceAlertCreate, PriceAlertResponse, OptionCreate, OptionResponse
+from app.models import User, Order, Wallet, Portfolio, Transaction, TransactionType, OrderStatus, OrderType, OrderSide, TradingBot, BotStatus, Achievement, PriceAlert, AlertDir, OptionContract, OptionType, CopySubscription
+from app.schemas import OrderCreate, OrderResponse, PortfolioItemResponse, TradingBotCreate, TradingBotResponse, AchievementResponse, PriceAlertCreate, PriceAlertResponse, OptionCreate, OptionResponse, CopyTradeRequest
 from app.api import get_current_user
 from app.websockets import manager, stock_prices
 from typing import List
 
 router = APIRouter()
+
+async def process_copy_trades(source_order_id: int):
+    try:
+        async with AsyncSessionLocal() as db:
+            src_res = await db.execute(select(Order).where(Order.id == source_order_id))
+            src_order = src_res.scalars().first()
+            if not src_order: return
+            
+            subs_res = await db.execute(select(CopySubscription).where(CopySubscription.target_user_id == src_order.user_id).where(CopySubscription.active == True))
+            subscribers = subs_res.scalars().all()
+            
+            spawned_orders = []
+            for sub in subscribers:
+                copy_cost = src_order.quantity * src_order.price
+                if copy_cost > sub.allocated_amount: continue
+                
+                sub_res = await db.execute(select(User).where(User.id == sub.subscriber_id))
+                sub_user = sub_res.scalars().first()
+                if not sub_user: continue
+                
+                copy_order = Order(
+                    user_id=sub.subscriber_id,
+                    symbol=src_order.symbol,
+                    order_type=src_order.order_type,
+                    side=src_order.side,
+                    quantity=src_order.quantity,
+                    price=src_order.price,
+                    stop_loss_price=src_order.stop_loss_price,
+                    take_profit_price=src_order.take_profit_price,
+                    trailing_stop_active=src_order.trailing_stop_active,
+                    status=OrderStatus.PENDING
+                )
+                db.add(copy_order)
+                spawned_orders.append((copy_order, sub_user.email))
+                
+            await db.commit()
+            
+            for o, email in spawned_orders:
+                await db.refresh(o)
+                asyncio.create_task(execute_trade_background(o.id, email))
+    except Exception as e:
+        import traceback
+        print("COPY TRADING ERROR:", e)
+        traceback.print_exc()
 
 async def execute_trade_background(order_id: int, user_email: str):
     import traceback
@@ -145,6 +189,9 @@ async def place_order(order_req: OrderCreate, background_tasks: BackgroundTasks,
         side=order_req.side,
         quantity=order_req.quantity,
         price=execute_price,
+        stop_loss_price=order_req.stop_loss_price,
+        take_profit_price=order_req.take_profit_price,
+        trailing_stop_active=order_req.trailing_stop_active,
         status=OrderStatus.PENDING
     )
     db.add(order)
@@ -152,6 +199,9 @@ async def place_order(order_req: OrderCreate, background_tasks: BackgroundTasks,
     await db.refresh(order)
 
     background_tasks.add_task(execute_trade_background, order.id, current_user.email)
+    
+    # Broadcast copy-trades to all subscribers securely in background
+    background_tasks.add_task(process_copy_trades, order.id)
     
     await manager.send_personal_message({
         "type": "order_pending",
