@@ -367,6 +367,9 @@ const Dashboard = () => {
                 addNotification(`⚡ CONTRACT EVENT: ${msg.data.message}`);
                 apiFetch("/trade/portfolio", "GET", null, token).then(setPortfolio);
                 apiFetch("/trade/orders", "GET", null, token).then(setOrders);
+            } else if (msg.type === "trade_signal") {
+                const dir = msg.data.direction === "Bullish" ? "🟢" : "🔴";
+                addNotification(`🧠 AI SIGNAL: ${dir} ${msg.data.symbol} - ${msg.data.pattern} (${msg.data.confidence}% conf)`);
             }
         };
         return () => ws.current.close();
@@ -403,7 +406,11 @@ const Dashboard = () => {
     }, [activeTab]);
 
     const addNotification = (msg) => {
-        setNotifications(prev => [msg, ...prev].slice(0, 5));
+        const id = Date.now() + Math.random();
+        setNotifications(prev => [{id, msg}, ...prev].slice(0, 5));
+        setTimeout(() => {
+            setNotifications(prev => prev.filter(n => n.id !== id));
+        }, 6000);
     };
 
     return (
@@ -538,7 +545,7 @@ const Dashboard = () => {
                     {activeTab === 'orders' && <OrdersTab orders={orders} onRefresh={loadData} token={token} />}
                     {activeTab === 'pro_terminal' && <ProTerminalTab livePrices={livePrices} priceHistory={priceHistory} />}
                     {activeTab === 'heatmap' && <HeatmapTab livePrices={livePrices} priceHistory={priceHistory} />}
-                    {activeTab === 'sandbox' && <SandboxTab livePrices={livePrices} priceHistory={priceHistory} />}
+                    {activeTab === 'sandbox' && <SandboxTab livePrices={livePrices} priceHistory={priceHistory} token={token} />}
                     {activeTab === 'calendar' && <CalendarTab />}
                     {activeTab === 'otc' && <OTCTab token={token} wallet={wallet} />}
                     {activeTab === 'ipo' && <IPOTab wallet={wallet} token={token} />}
@@ -547,10 +554,10 @@ const Dashboard = () => {
 
                 {/* Notifications Toast */}
                 {notifications.length > 0 && (
-                    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
-                        {notifications.map((n, i) => (
-                            <div key={i} className="bg-slate-800 border-l-4 border-primary p-4 rounded shadow-lg text-sm text-white animate-pulse">
-                                {n}
+                    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+                        {notifications.map((n) => (
+                            <div key={n.id} className="bg-slate-800 border-l-4 border-primary p-4 rounded shadow-2xl text-sm text-white animate-fade-in transition-all translate-y-0 opacity-100">
+                                {n.msg}
                             </div>
                         ))}
                     </div>
@@ -1601,18 +1608,30 @@ const ProTerminalTab = ({ livePrices, priceHistory }) => {
 };
 
 const IPOTab = ({ wallet, token }) => {
+    const [ipos, setIpos] = useState([]);
     const [bids, setBids] = useState({});
     
-    const ipos = [
-        { name: "Neuralink Corp", symbol: "NRLNK", price: 1540, minQty: 10, status: "OPEN", endsIn: "24:00:00", description: "Brain-computer interface technologies." },
-        { name: "SpaceX Exploration", symbol: "SPCX", price: 3200, minQty: 5, status: "OPEN", endsIn: "48:30:00", description: "Aerospace manufacturer and space transport services." },
-        { name: "Stark Industries", symbol: "STARK", price: 8500, minQty: 1, status: "CLOSED", endsIn: "00:00:00", description: "Advanced defense and clean energy tech." }
-    ];
+    useEffect(() => {
+        apiFetch("/trade/ipos", "GET", null, token)
+            .then(data => {
+                setIpos(data);
+                const newBids = {};
+                data.forEach(i => { if(i.has_bid) newBids[i.symbol] = true; });
+                setBids(newBids);
+            })
+            .catch(console.error);
+    }, [token]);
 
-    const handleBid = (symbol, cost) => {
+    const handleBid = async (symbol, cost) => {
         if(wallet.balance < cost) return alert("Insufficient funds to place IPO bid!");
-        setBids(prev => ({...prev, [symbol]: true}));
-        alert(`Successfully queued bid for ${symbol}! Allocation results will be announced dynamically.`);
+        try {
+            await apiFetch(`/trade/ipo/${symbol}/bid`, "POST", null, token);
+            setBids(prev => ({...prev, [symbol]: true}));
+            alert(`Successfully queued bid for ${symbol}! Allocation results will be announced dynamically.`);
+            apiFetch("/trade/ipos", "GET", null, token).then(setIpos);
+        } catch (e) {
+            alert(e.message);
+        }
     };
 
     return (
@@ -1726,25 +1745,21 @@ const HeatmapTab = ({ livePrices, priceHistory }) => {
     );
 };
 
-const SandboxTab = ({ livePrices, priceHistory }) => {
+const SandboxTab = ({ livePrices, priceHistory, token }) => {
     const [strategy, setStrategy] = useState("sma_crossover");
     const [asset, setAsset] = useState("RELIANCE");
     const [capital, setCapital] = useState("100000");
     const [isSimulating, setIsSimulating] = useState(false);
     const [result, setResult] = useState(null);
 
-    const runSimulation = () => {
+    const runSimulation = async () => {
         setIsSimulating(true);
         setResult(null);
-        setTimeout(() => {
-            // Hardcoded mocked output for immediate visual satisfaction
-            const baseFactor = strategy === 'sma_crossover' ? 1.15 : strategy === 'mean_reversion' ? 1.08 : 0.95;
-            const finalValue = parseFloat(capital) * baseFactor * (1 + (Math.random() * 0.1));
-            const pnl = finalValue - parseFloat(capital);
-            const winRate = Math.floor(Math.random() * 30) + 45; // 45% - 75%
-            setResult({ finalValue, pnl, winRate, trades: Math.floor(Math.random() * 100) + 20 });
-            setIsSimulating(false);
-        }, 1500);
+        try {
+            const data = await apiFetch("/trade/sandbox", "POST", { strategy, asset, capital: parseFloat(capital) }, token);
+            setResult(data);
+        } catch (e) { alert(e.message); }
+        setIsSimulating(false);
     };
 
     return (
@@ -1892,17 +1907,33 @@ const CalendarTab = () => {
 };
 
 const OTCTab = ({ token, wallet }) => {
-    // Basic mock logic for OTC. Real integration requires a separate database table for `otc_listings`.
-    const [listings, setListings] = useState([
-        { id: 1, seller: "Whale_007", symbol: "RELIANCE", quantity: 5000, price: 2900, minPrice: 2880, status: "OPEN" },
-        { id: 2, seller: "CryptoBaron", symbol: "BTC_INR", quantity: 15, price: 5800000, minPrice: 5750000, status: "OPEN" },
-        { id: 3, seller: "RetailLegend", symbol: "TCS", quantity: 1200, price: 3950, minPrice: 3950, status: "LOCKED" },
-    ]);
+    const [listings, setListings] = useState([]);
+    const [showCreate, setShowCreate] = useState(false);
+    const [newListing, setNewListing] = useState({ symbol: '', quantity: 1000, price: '' });
 
-    const handleBuy = (id, cost) => {
+    const loadListings = () => {
+        apiFetch("/trade/otc", "GET", null, token).then(setListings).catch(console.error);
+    };
+    useEffect(loadListings, [token]);
+
+    const handleBuy = async (id, cost) => {
         if (wallet.balance < cost) return alert("Insufficient funds to buy this OTC block!");
-        alert("OTC Dark Pool Block successfully settled! (Simulated)");
-        setListings(prev => prev.map(l => l.id === id ? {...l, status: "FILLED"} : l));
+        try {
+            await apiFetch(`/trade/otc/${id}/buy`, "POST", null, token);
+            alert("OTC Dark Pool Block successfully settled! (Simulated)");
+            loadListings();
+        } catch(e) { alert(e.message); }
+    };
+
+    const handleCreate = async (e) => {
+        e.preventDefault();
+        try {
+            await apiFetch("/trade/otc", "POST", { symbol: newListing.symbol.toUpperCase(), quantity: parseInt(newListing.quantity), price: parseFloat(newListing.price) }, token);
+            alert("OTC Listing created!");
+            setNewListing({ symbol: '', quantity: 1000, price: '' });
+            setShowCreate(false);
+            loadListings();
+        } catch(e) { alert(e.message); }
     };
 
     return (
@@ -1912,8 +1943,29 @@ const OTCTab = ({ token, wallet }) => {
                     <h2 className="text-2xl font-bold flex items-center gap-2"><i data-lucide="briefcase" className="text-slate-400"></i> Peer-to-Peer OTC Dark Pool</h2>
                     <p className="text-slate-400 text-sm mt-1">Buy enormous blocks of assets directly from other traders off-market.</p>
                 </div>
-                <button className="bg-primary hover:bg-blue-600 text-white px-4 py-2 rounded font-bold shadow-lg transition">Create Block Listing</button>
+                <button onClick={() => setShowCreate(!showCreate)} className="bg-primary hover:bg-blue-600 text-white px-4 py-2 rounded font-bold shadow-lg transition">Create Block Listing</button>
             </div>
+            
+            {showCreate && (
+                <div className="bg-dark p-6 rounded-xl border border-primary/30 shadow-2xl mb-6">
+                    <h3 className="text-lg font-bold mb-4">Create new off-market listing</h3>
+                    <form onSubmit={handleCreate} className="flex gap-4 items-end">
+                        <div className="flex-1">
+                            <label className="block text-xs text-slate-400 mb-1">Asset Symbol</label>
+                            <input required value={newListing.symbol} onChange={e=>setNewListing({...newListing, symbol: e.target.value})} className="w-full bg-slate-800 border-none rounded p-2 text-white" placeholder="RELIANCE" />
+                        </div>
+                        <div className="flex-1">
+                            <label className="block text-xs text-slate-400 mb-1">Quantity</label>
+                            <input required type="number" value={newListing.quantity} onChange={e=>setNewListing({...newListing, quantity: e.target.value})} className="w-full bg-slate-800 border-none rounded p-2 text-white" />
+                        </div>
+                        <div className="flex-1">
+                            <label className="block text-xs text-slate-400 mb-1">Total Asking Price Per Share</label>
+                            <input required type="number" step="0.01" value={newListing.price} onChange={e=>setNewListing({...newListing, price: e.target.value})} className="w-full bg-slate-800 border-none rounded p-2 text-white" />
+                        </div>
+                        <button type="submit" className="bg-success hover:bg-green-600 text-white font-bold px-6 py-2 rounded">List Now</button>
+                    </form>
+                </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {listings.map(l => {

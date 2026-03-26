@@ -4,8 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update
 from app.db.session import get_db, AsyncSessionLocal
-from app.models import User, Order, Wallet, Portfolio, Transaction, TransactionType, OrderStatus, OrderType, OrderSide, TradingBot, BotStatus, Achievement, PriceAlert, AlertDir, OptionContract, OptionType, CopySubscription
-from app.schemas import OrderCreate, OrderResponse, PortfolioItemResponse, TradingBotCreate, TradingBotResponse, AchievementResponse, PriceAlertCreate, PriceAlertResponse, OptionCreate, OptionResponse, CopyTradeRequest
+from app.models import User, Order, Wallet, Portfolio, Transaction, TransactionType, OrderStatus, OrderType, OrderSide, TradingBot, BotStatus, Achievement, PriceAlert, AlertDir, OptionContract, OptionType, CopySubscription, OtcListing, OtcStatus, IpoListing, IpoStatus, IpoBid
+from app.schemas import OrderCreate, OrderResponse, PortfolioItemResponse, TradingBotCreate, TradingBotResponse, AchievementResponse, PriceAlertCreate, PriceAlertResponse, OptionCreate, OptionResponse, CopyTradeRequest, OtcListingCreate, OtcListingResponse, IpoListingResponse
 from app.api import get_current_user
 from app.websockets import manager, stock_prices
 from typing import List
@@ -534,3 +534,309 @@ async def options_watcher_loop():
             print("OPTIONS WATCHER EXCEPTION:", e)
             traceback.print_exc()
         await asyncio.sleep(5.0)
+
+@router.post("/copy")
+async def setup_copy_trading(req: CopyTradeRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(User).where(User.email == req.target_user_email))
+    target_user = res.scalars().first()
+    if not target_user:
+        target_user = User(email=req.target_user_email, hashed_password="mock")
+        db.add(target_user)
+        await db.commit()
+        await db.refresh(target_user)
+        
+    sub_res = await db.execute(select(CopySubscription).where(CopySubscription.subscriber_id == current_user.id).where(CopySubscription.target_user_id == target_user.id))
+    sub = sub_res.scalars().first()
+    
+    if req.allocated_amount <= 0:
+        if sub:
+            sub.active = False
+            await db.commit()
+            return {"status": "success", "message": f"Unsubscribed from {req.target_user_email}"}
+        return {"status": "success", "message": "Nothing to unsubscribe"}
+        
+    if sub:
+        sub.allocated_amount = req.allocated_amount
+        sub.active = True
+    else:
+        sub = CopySubscription(
+            subscriber_id=current_user.id,
+            target_user_id=target_user.id,
+            allocated_amount=req.allocated_amount,
+            active=True
+        )
+        db.add(sub)
+    await db.commit()
+    return {"status": "success", "message": f"Successfully mirroring {req.target_user_email}"}
+
+async def alpha_trader_loop():
+    import traceback
+    import random
+    while True:
+        try:
+            await asyncio.sleep(15.0)
+            async with AsyncSessionLocal() as db:
+                subs_res = await db.execute(select(CopySubscription).where(CopySubscription.active == True))
+                subs = subs_res.scalars().all()
+                target_ids = list(set([s.target_user_id for s in subs]))
+                
+                if not target_ids:
+                    continue
+                
+                target_id = random.choice(target_ids)
+                usr_res = await db.execute(select(User).where(User.id == target_id))
+                target_user = usr_res.scalars().first()
+                if not target_user: continue
+                
+                symbol = random.choice(list(stock_prices.keys()))
+                price = stock_prices[symbol]
+                qty = random.randint(10, 100)
+                
+                mock_order = Order(
+                    user_id=target_user.id,
+                    symbol=symbol,
+                    order_type=OrderType.MARKET,
+                    side=OrderSide.BUY if random.random() > 0.5 else OrderSide.SELL,
+                    quantity=qty,
+                    price=price,
+                    status=OrderStatus.EXECUTED
+                )
+                db.add(mock_order)
+                await db.commit()
+                await db.refresh(mock_order)
+                
+                asyncio.create_task(process_copy_trades(mock_order.id))
+        except Exception as e:
+            print("ALPHA TRADER LOOP EXCEPT", e)
+            traceback.print_exc()
+
+async def bracket_order_loop():
+    import traceback
+    while True:
+        try:
+            await asyncio.sleep(3.0)
+            async with AsyncSessionLocal() as db:
+                ords_res = await db.execute(select(Order).where(Order.status == OrderStatus.EXECUTED).where(Order.side == OrderSide.BUY))
+                executed_buys = ords_res.scalars().all()
+                for o in executed_buys:
+                    if not o.stop_loss_price and not o.take_profit_price:
+                        continue
+                        
+                    current_price = stock_prices.get(o.symbol)
+                    if not current_price: continue
+                    
+                    trigger_sell = False
+                    reason = ""
+                    if o.stop_loss_price and current_price <= o.stop_loss_price:
+                        trigger_sell = True
+                        reason = f"Stop Loss hit at {current_price}"
+                    elif o.take_profit_price and current_price >= o.take_profit_price:
+                        trigger_sell = True
+                        reason = f"Take Profit hit at {current_price}"
+                        
+                    if trigger_sell:
+                        port_res = await db.execute(select(Portfolio).where(Portfolio.user_id == o.user_id).where(Portfolio.symbol == o.symbol))
+                        port = port_res.scalars().first()
+                        if port and port.quantity > 0:
+                            qty_to_sell = min(port.quantity, o.quantity)
+                            sell_order = Order(
+                                user_id=o.user_id,
+                                symbol=o.symbol,
+                                order_type=OrderType.MARKET,
+                                side=OrderSide.SELL,
+                                quantity=qty_to_sell,
+                                price=current_price,
+                                status=OrderStatus.PENDING
+                            )
+                            db.add(sell_order)
+                            o.stop_loss_price = None
+                            o.take_profit_price = None
+                            await db.commit()
+                            await db.refresh(sell_order)
+                            
+                            user_res = await db.execute(select(User).where(User.id == o.user_id))
+                            usr = user_res.scalars().first()
+                            if usr:
+                                await manager.send_personal_message({
+                                    "type": "order_pending",
+                                    "data": { "symbol": o.symbol, "side": "SELL", "status": "PENDING", "reason": reason }
+                                }, usr.email)
+                                asyncio.create_task(execute_trade_background(sell_order.id, usr.email))
+        except Exception as e:
+            print("BRACKET LOOP EXCEPTION", e)
+            traceback.print_exc()
+
+async def ai_signal_loop():
+    import traceback
+    import random
+    while True:
+        try:
+            await asyncio.sleep(45.0)
+            symbol = random.choice(list(stock_prices.keys()))
+            patterns = [
+                "Bullish Engulfing", "Bearish MACD Divergence", "Golden Cross",
+                "Death Cross", "Double Bottom Breakout", "Head and Shoulders",
+                "Cup and Handle", "Triple Top"
+            ]
+            pattern = random.choice(patterns)
+            direction = "Bullish" if "Bullish" in pattern or "Cross" in pattern or "Bottom" in pattern or "Cup" in pattern else "Bearish"
+            if "Death" in pattern or "Top" in pattern: direction = "Bearish"
+            
+            await manager.broadcast({
+                "type": "trade_signal",
+                "data": {
+                    "symbol": symbol,
+                    "pattern": pattern,
+                    "direction": direction,
+                    "confidence": random.randint(65, 95)
+                }
+            })
+        except Exception as e:
+            print("AI SIGNAL LOOP EXCEPT", e)
+            traceback.print_exc()
+
+from pydantic import BaseModel
+class SandboxRequest(BaseModel):
+    strategy: str
+    asset: str
+    capital: float
+
+@router.post("/sandbox")
+async def run_sandbox(req: SandboxRequest, current_user: User = Depends(get_current_user)):
+    import random, asyncio
+    await asyncio.sleep(2.0)
+    
+    # Real backtest logic placeholder, generating simulated historical trades
+    if req.strategy == "sma_crossover":
+        base_factor = 1.15
+        win_rate = random.randint(55, 75)
+    elif req.strategy == "mean_reversion":
+        base_factor = 1.08
+        win_rate = random.randint(50, 70)
+    else:
+        base_factor = 0.95
+        win_rate = random.randint(40, 55)
+        
+    final_val = req.capital * base_factor * (1 + (random.random() * 0.1))
+    return {
+        "finalValue": final_val,
+        "pnl": final_val - req.capital,
+        "winRate": win_rate,
+        "trades": random.randint(20, 100)
+    }
+
+@router.get("/otc", response_model=List[OtcListingResponse])
+async def get_otc(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(OtcListing).order_by(OtcListing.created_at.desc()))
+    listings = res.scalars().all()
+    out = []
+    for l in listings:
+        usr_res = await db.execute(select(User).where(User.id == l.seller_id))
+        usr = usr_res.scalars().first()
+        out.append({
+            "id": l.id, "seller_id": l.seller_id, "seller_name": usr.email.split("@")[0] if usr else "Unknown",
+            "symbol": l.symbol, "quantity": l.quantity, "price": l.price, "status": l.status.value
+        })
+    return out
+
+@router.post("/otc")
+async def create_otc(req: OtcListingCreate, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if req.symbol not in stock_prices: raise HTTPException(400, "Invalid symbol")
+    port_res = await db.execute(select(Portfolio).where(Portfolio.user_id == current_user.id).where(Portfolio.symbol == req.symbol))
+    port = port_res.scalars().first()
+    if not port or port.quantity < req.quantity:
+        raise HTTPException(400, "Insufficient portfolio balance to list OTC block")
+        
+    listing = OtcListing(seller_id=current_user.id, symbol=req.symbol, quantity=req.quantity, price=req.price)
+    db.add(listing)
+    
+    # lock the portfolio quantity
+    port.quantity -= req.quantity
+    await db.commit()
+    
+    return {"status": "success", "message": "OTC Listing Created"}
+
+@router.post("/otc/{listing_id}/buy")
+async def buy_otc(listing_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(OtcListing).where(OtcListing.id == listing_id))
+    listing = res.scalars().first()
+    if not listing: raise HTTPException(404, "Listing not found")
+    if listing.status != OtcStatus.OPEN: raise HTTPException(400, "Listing already filled")
+    
+    cost = listing.quantity * listing.price
+    wallet_res = await db.execute(select(Wallet).where(Wallet.user_id == current_user.id))
+    wallet = wallet_res.scalars().first()
+    if not wallet or wallet.balance < cost: raise HTTPException(400, "Insufficient funds")
+    
+    wallet.balance -= cost
+    listing.status = OtcStatus.FILLED
+    
+    # target user money
+    t_wallet_res = await db.execute(select(Wallet).where(Wallet.user_id == listing.seller_id))
+    t_wallet = t_wallet_res.scalars().first()
+    if t_wallet: t_wallet.balance += cost
+    
+    # portfolio user
+    port_res = await db.execute(select(Portfolio).where(Portfolio.user_id == current_user.id).where(Portfolio.symbol == listing.symbol))
+    port = port_res.scalars().first()
+    if port:
+        new_qty = port.quantity + listing.quantity
+        port.avg_price = ((port.avg_price*port.quantity) + cost) / new_qty
+        port.quantity = new_qty
+    else:
+        port = Portfolio(user_id=current_user.id, symbol=listing.symbol, quantity=listing.quantity, avg_price=listing.price)
+        db.add(port)
+    await db.commit()
+    return {"status": "success", "message": "Successfully bought OTC block"}
+
+@router.get("/ipos", response_model=List[IpoListingResponse])
+async def get_ipos(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(IpoListing))
+    listings = res.scalars().all()
+    
+    # Mock data if empty
+    if not listings:
+        mock_ipos = [
+            IpoListing(name="Neuralink Corp", symbol="NRLNK", price=1540, min_qty=10, ends_in="24:00:00", description="Brain-computer UI."),
+            IpoListing(name="SpaceX Exploration", symbol="SPCX", price=3200, min_qty=5, ends_in="48:30:00", description="Space transport."),
+            IpoListing(name="Stark Industries", symbol="STARK", price=8500, min_qty=1, status=IpoStatus.CLOSED, ends_in="00:00:00", description="Defense tech")
+        ]
+        for m in mock_ipos: db.add(m)
+        await db.commit()
+        res = await db.execute(select(IpoListing))
+        listings = res.scalars().all()
+        
+    out = []
+    for ipo in listings:
+        bid_res = await db.execute(select(IpoBid).where(IpoBid.user_id == current_user.id).where(IpoBid.ipo_id == ipo.id))
+        has_bid = bid_res.scalars().first() is not None
+        out.append({
+            "id": ipo.id, "name": ipo.name, "symbol": ipo.symbol, "price": ipo.price, "min_qty": ipo.min_qty, "status": ipo.status.value, "ends_in": ipo.ends_in, "description": ipo.description, "has_bid": has_bid
+        })
+    return out
+
+@router.post("/ipo/{symbol}/bid")
+async def bid_ipo(symbol: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(IpoListing).where(IpoListing.symbol == symbol))
+    ipo = res.scalars().first()
+    if not ipo: raise HTTPException(404, "IPO not found")
+    if ipo.status != IpoStatus.OPEN: raise HTTPException(400, "IPO bidding is closed")
+    
+    bid_res = await db.execute(select(IpoBid).where(IpoBid.user_id == current_user.id).where(IpoBid.ipo_id == ipo.id))
+    if bid_res.scalars().first(): raise HTTPException(400, "You already placed a bid")
+    
+    cost = ipo.price * ipo.min_qty
+    w_res = await db.execute(select(Wallet).where(Wallet.user_id == current_user.id))
+    w = w_res.scalars().first()
+    if not w or w.balance < cost: raise HTTPException(400, "Insufficient funds for IPO bid")
+    
+    w.balance -= cost
+    bid = IpoBid(user_id=current_user.id, ipo_id=ipo.id, quantity_bid=ipo.min_qty)
+    db.add(bid)
+    
+    # We trigger a transaction for history
+    tx = Transaction(user_id=current_user.id, type=TransactionType.BUY, amount=cost)
+    db.add(tx)
+    
+    await db.commit()
+    return {"status": "success", "message": "Bid locked successfully."}

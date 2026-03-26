@@ -148,3 +148,32 @@ class OptionResponse(BaseModel):
 class CopyTradeRequest(BaseModel):
     target_user_email: str
     allocated_amount: float
+
+class OtcListingResponse(BaseModel):
+    id: int
+    seller_id: int
+    seller_name: Optional[str] = None
+    symbol: str
+    quantity: int
+    price: float
+    status: str
+    class Config:
+        from_attributes = True
+
+class OtcListingCreate(BaseModel):
+    symbol: str
+    quantity: int
+    price: float
+
+class IpoListingResponse(BaseModel):
+    id: int
+    name: str
+    symbol: str
+    price: float
+    min_qty: int
+    status: str
+    ends_in: str
+    description: str
+    has_bid: Optional[bool] = False
+    class Config:
+        from_attributes = True

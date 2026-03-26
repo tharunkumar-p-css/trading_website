@@ -170,3 +170,41 @@ class CopySubscription(Base):
     allocated_amount = Column(Float, default=0.0)
     active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class OtcStatus(str, enum.Enum):
+    OPEN = "OPEN"
+    FILLED = "FILLED"
+
+class IpoStatus(str, enum.Enum):
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+
+class OtcListing(Base):
+    __tablename__ = "otc_listings"
+    id = Column(Integer, primary_key=True, index=True)
+    seller_id = Column(Integer, ForeignKey("users.id"))
+    symbol = Column(String, index=True)
+    quantity = Column(Integer)
+    price = Column(Float)
+    status = Column(Enum(OtcStatus), default=OtcStatus.OPEN)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class IpoListing(Base):
+    __tablename__ = "ipo_listings"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String)
+    symbol = Column(String, unique=True, index=True)
+    price = Column(Float)
+    min_qty = Column(Integer)
+    status = Column(Enum(IpoStatus), default=IpoStatus.OPEN)
+    ends_in = Column(String)
+    description = Column(String)
+
+class IpoBid(Base):
+    __tablename__ = "ipo_bids"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    ipo_id = Column(Integer, ForeignKey("ipo_listings.id"))
+    quantity_bid = Column(Integer)
+    allocated = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
