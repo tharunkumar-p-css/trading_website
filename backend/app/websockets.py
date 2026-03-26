@@ -100,7 +100,9 @@ initial_stocks = {
     "MKR_INR": 220000.0, "AXS_INR": 550.0, "SAND_INR": 42.0, "MANA_INR": 38.0, "GALA_INR": 2.5,
     "ENJ_INR": 28.0, "CHZ_INR": 9.5, "QNT_INR": 8500.0, "NEAR_INR": 420.0, "FTM_INR": 35.0, "GRT_INR": 14.5
 }
+import random
 stock_prices = initial_stocks.copy()
+stock_trends = {sym: 0.0 for sym in initial_stocks}
 
 async def generate_mock_prices():
     while True:
@@ -108,12 +110,24 @@ async def generate_mock_prices():
         candles = {}
         for symbol in stock_prices:
             base = stock_prices[symbol]
-            # Emulate random walk: -0.5% to +0.5% drift per second
-            volatility = random.uniform(0.995, 1.005)
-            new_price = round(base * volatility, 2)
             
-            high = round(max(base, new_price) * random.uniform(1.0, 1.002), 2)
-            low = round(min(base, new_price) * random.uniform(0.998, 1.0), 2)
+            # Geometric Brownian Motion with Mean-Reverting Momentum
+            # The trend slowly drifts back to 0 so stocks don't crash to 0 or hit infinity
+            stock_trends[symbol] = stock_trends[symbol] * 0.9 + random.gauss(0, 0.0005)
+            
+            # Higher base volatility for Crypto, lower for indices / mega caps
+            vol_base = 0.002 if 'INR' in symbol else (0.0005 if 'NIFTY' in symbol else 0.001)
+            
+            drift = stock_trends[symbol] + random.gauss(0, vol_base)
+            new_price = round(base * (1 + drift), 2)
+            if new_price <= 0: new_price = 0.01
+            
+            # Simulate intra-second wicks securely above/below the close
+            intra_1 = base * (1 + random.gauss(0, vol_base * 0.5))
+            intra_2 = new_price * (1 + random.gauss(0, vol_base * 0.5))
+            
+            high = round(max(base, new_price, intra_1, intra_2), 2)
+            low = round(min(base, new_price, intra_1, intra_2), 2)
             
             stock_prices[symbol] = new_price
             updates[symbol] = new_price
@@ -122,7 +136,8 @@ async def generate_mock_prices():
                 "close": new_price,
                 "high": high,
                 "low": low,
-                "price": new_price
+                "price": new_price,
+                "volume": random.randint(10, 5000)
             }
         
         await manager.broadcast({

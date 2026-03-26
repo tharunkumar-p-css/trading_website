@@ -4,84 +4,340 @@ const { createRoot } = ReactDOM;
 const { LightweightCharts } = window;
 if (!LightweightCharts) console.error("LightweightCharts is not loaded!");
 
-const RealtimeChart = ({ data, type = "candlestick", height, showVolume = false, showIndicators = false }) => {
-    const chartContainerRef = useRef();
+// ─── ProChart: Advanced Chart with Drawing Tools & Indicators ───────────────
+
+const ProChart = ({ data, symbol, compact = false }) => {
+    const containerRef = useRef();
     const chartRef = useRef();
     const seriesRef = useRef();
+    const volSeriesRef = useRef();
+    const indicatorSeriesRef = useRef({});
+    const drawingCanvasRef = useRef();
+    const overlayRef = useRef();
 
+    const [chartType, setChartType] = useState('candlestick');
+    const [activeTool, setActiveTool] = useState('crosshair');
+    const [activeIndicators, setActiveIndicators] = useState({ sma14: false, sma50: false, ema21: false, bb: false });
+    const [showVolume, setShowVolume] = useState(true);
+    const [showRsi, setShowRsi] = useState(false);
+    const [drawings, setDrawings] = useState([]);
+    const drawState = useRef({ isDrawing: false, startX: 0, startY: 0, currentPath: [] });
+
+    // Initialize chart
     useEffect(() => {
-        const chart = LightweightCharts.createChart(chartContainerRef.current, {
+        if (!containerRef.current) return;
+        const chart = LightweightCharts.createChart(containerRef.current, {
             autoSize: true,
             layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
-            grid: { 
-                vertLines: { color: type === 'line' ? 'transparent' : '#1e293b' }, 
-                horzLines: { color: type === 'line' ? 'transparent' : '#1e293b' } 
-            },
-            timeScale: { visible: type !== 'line', timeVisible: true, secondsVisible: true, borderVisible: false },
-            rightPriceScale: { visible: type !== 'line', borderVisible: false },
-            handleScroll: type !== 'line',
-            handleScale: type !== 'line'
+            grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
+            crosshair: { mode: 1 },
+            timeScale: { timeVisible: true, secondsVisible: true, borderVisible: false },
+            rightPriceScale: { borderVisible: false },
         });
         chartRef.current = chart;
-        
-        const mainSeries = type === "candlestick" 
-            ? chart.addCandlestickSeries({ upColor: '#22c55e', downColor: '#ef4444', borderVisible: false, wickUpColor: '#22c55e', wickDownColor: '#ef4444' })
-            : chart.addLineSeries({ color: '#3b82f6', lineWidth: 2, crosshairMarkerVisible: false });
-        
-        let volumeSeries, sma14, sma50;
-        if (showVolume && type === "candlestick") {
-            volumeSeries = chart.addHistogramSeries({
-                color: '#26a69a',
-                priceFormat: { type: 'volume' },
-                priceScaleId: '', 
-            });
-            chart.priceScale('').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
-        }
-        
-        if (showIndicators && type === "candlestick") {
-            sma14 = chart.addLineSeries({ color: 'rgba(255, 193, 7, 0.8)', lineWidth: 2, title: 'SMA 14', crosshairMarkerVisible: false });
-            sma50 = chart.addLineSeries({ color: 'rgba(156, 39, 176, 0.8)', lineWidth: 2, title: 'SMA 50', crosshairMarkerVisible: false });
-        }
-        
-        seriesRef.current = { main: mainSeries, volume: volumeSeries, sma14, sma50 };
 
-        return () => { 
-            chart.remove(); 
-        };
-    }, [type, showVolume, showIndicators]);
+        const main = chart.addCandlestickSeries({ upColor: '#22c55e', downColor: '#ef4444', borderVisible: false, wickUpColor: '#22c55e', wickDownColor: '#ef4444' });
+        seriesRef.current = main;
 
+        const vol = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: '' });
+        chart.priceScale('').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+        volSeriesRef.current = vol;
+
+        return () => chart.remove();
+    }, []);
+
+    // Update chart type
     useEffect(() => {
-        if (!seriesRef.current || !seriesRef.current.main || !data || data.length === 0) return;
-        
-        seriesRef.current.main.setData(data);
-        
-        if (showVolume && seriesRef.current.volume) {
-            const volData = data.map(d => ({
-                time: d.time,
-                value: typeof d.volume === 'number' ? d.volume : Math.abs(d.close - d.open) * (Math.random()*500 + 100), 
-                color: d.close >= d.open ? 'rgba(38, 166, 154, 0.4)' : 'rgba(239, 83, 80, 0.4)'
-            }));
-            seriesRef.current.volume.setData(volData);
-        }
-        
-        if (showIndicators && seriesRef.current.sma14) {
-            const getSMA = (period) => {
-                const sData = [];
-                for(let i=0; i<data.length; i++) {
-                    if(i < period - 1) continue;
-                    let sum = 0;
-                    for(let j=0; j<period; j++) sum += data[i-j].close;
-                    sData.push({ time: data[i].time, value: sum/period });
-                }
-                return sData;
-            };
-            seriesRef.current.sma14.setData(getSMA(14));
-            seriesRef.current.sma50.setData(getSMA(50));
-        }
-    }, [data, showVolume, showIndicators]);
+        if (!chartRef.current || !data || data.length === 0) return;
+        const chart = chartRef.current;
 
-    return <div ref={chartContainerRef} style={{ width: '100%', height: '100%', position: 'relative' }} />;
+        // Remove and re-add main series on type change
+        if (seriesRef.current) { try { chart.removeSeries(seriesRef.current); } catch(e){} }
+
+        let main;
+        if (chartType === 'line') {
+            main = chart.addLineSeries({ color: '#3b82f6', lineWidth: 2 });
+            main.setData(data.map(d => ({ time: d.time, value: d.close })));
+        } else if (chartType === 'area') {
+            main = chart.addAreaSeries({ topColor: 'rgba(59,130,246,0.4)', bottomColor: 'rgba(59,130,246,0.0)', lineColor: '#3b82f6', lineWidth: 2 });
+            main.setData(data.map(d => ({ time: d.time, value: d.close })));
+        } else if (chartType === 'bar') {
+            main = chart.addBarSeries({ upColor: '#22c55e', downColor: '#ef4444' });
+            main.setData(data);
+        } else {
+            main = chart.addCandlestickSeries({ upColor: '#22c55e', downColor: '#ef4444', borderVisible: false, wickUpColor: '#22c55e', wickDownColor: '#ef4444' });
+            main.setData(data);
+        }
+        seriesRef.current = main;
+    }, [chartType]);
+
+    // Push live data
+    useEffect(() => {
+        if (!seriesRef.current || !data || data.length === 0) return;
+        const isCandleType = chartType === 'candlestick' || chartType === 'bar';
+        seriesRef.current.setData(isCandleType ? data : data.map(d => ({ time: d.time, value: d.close })));
+
+        if (volSeriesRef.current && showVolume) {
+            volSeriesRef.current.setData(data.map(d => ({
+                time: d.time, 
+                value: d.volume || Math.abs(d.close - d.open) * (200 + Math.random() * 400),
+                color: d.close >= d.open ? 'rgba(34,197,94,0.35)' : 'rgba(239,68,68,0.35)'
+            })));
+        }
+
+        // Indicators
+        const chart = chartRef.current;
+        const refs = indicatorSeriesRef.current;
+
+        const getSMA = (period) => data.slice(period - 1).map((_, i) => {
+            const slice = data.slice(i, i + period);
+            return { time: data[i + period - 1].time, value: slice.reduce((s, d) => s + d.close, 0) / period };
+        });
+        const getEMA = (period) => {
+            const k = 2 / (period + 1); let ema = data[0].close;
+            return data.map((d, i) => { if (i === 0) { ema = d.close; } else { ema = d.close * k + ema * (1 - k); } return { time: d.time, value: ema }; });
+        };
+
+        const indicatorConfig = {
+            sma14: { factory: () => chart.addLineSeries({ color: '#facc15', lineWidth: 1, title: 'SMA14', crosshairMarkerVisible: false }), data: () => getSMA(14) },
+            sma50: { factory: () => chart.addLineSeries({ color: '#a855f7', lineWidth: 1, title: 'SMA50', crosshairMarkerVisible: false }), data: () => getSMA(50) },
+            ema21: { factory: () => chart.addLineSeries({ color: '#06b6d4', lineWidth: 1, title: 'EMA21', crosshairMarkerVisible: false }), data: () => getEMA(21) },
+        };
+
+        Object.entries(activeIndicators).forEach(([key, isOn]) => {
+            if (key === 'bb') return;
+            if (isOn) {
+                if (!refs[key]) refs[key] = indicatorConfig[key].factory();
+                refs[key].setData(indicatorConfig[key].data());
+            } else {
+                if (refs[key]) { try { chart.removeSeries(refs[key]); } catch(e){} refs[key] = null; }
+            }
+        });
+
+        // Bollinger Bands
+        if (activeIndicators.bb) {
+            const period = 20; const stdMult = 2;
+            const bbData = data.slice(period - 1).map((_, i) => {
+                const slice = data.slice(i, i + period);
+                const mean = slice.reduce((s, d) => s + d.close, 0) / period;
+                const std = Math.sqrt(slice.reduce((s, d) => s + Math.pow(d.close - mean, 2), 0) / period);
+                return { time: data[i + period - 1].time, upper: mean + stdMult * std, mid: mean, lower: mean - stdMult * std };
+            });
+            if (!refs.bbUpper) {
+                refs.bbUpper = chart.addLineSeries({ color: 'rgba(148,163,184,0.6)', lineWidth: 1, title: 'BB+', crosshairMarkerVisible: false });
+                refs.bbMid   = chart.addLineSeries({ color: 'rgba(148,163,184,0.4)', lineWidth: 1, title: 'BB Mid', crosshairMarkerVisible: false, lineStyle: 2});
+                refs.bbLower = chart.addLineSeries({ color: 'rgba(148,163,184,0.6)', lineWidth: 1, title: 'BB-', crosshairMarkerVisible: false });
+            }
+            refs.bbUpper.setData(bbData.map(d => ({ time: d.time, value: d.upper })));
+            refs.bbMid.setData(bbData.map(d => ({ time: d.time, value: d.mid })));
+            refs.bbLower.setData(bbData.map(d => ({ time: d.time, value: d.lower })));
+        } else {
+            ['bbUpper', 'bbMid', 'bbLower'].forEach(k => {
+                if (refs[k]) { try { chart.removeSeries(refs[k]); } catch(e){} refs[k] = null; }
+            });
+        }
+
+    }, [data, showVolume, activeIndicators, chartType]);
+
+    // Drawing on canvas overlay
+    const getCanvasPos = (e) => {
+        const rect = drawingCanvasRef.current.getBoundingClientRect();
+        return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    };
+
+    const redrawCanvas = (allDrawings, inProgress = null) => {
+        const canvas = drawingCanvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const drawShape = (d, ctx) => {
+            ctx.beginPath();
+            ctx.strokeStyle = d.color || '#3b82f6';
+            ctx.lineWidth = d.width || 2;
+            ctx.globalAlpha = 0.85;
+            if (d.tool === 'pen' || d.tool === 'arrow') {
+                if (!d.path || d.path.length < 2) return;
+                ctx.moveTo(d.path[0].x, d.path[0].y);
+                d.path.forEach(p => ctx.lineTo(p.x, p.y));
+            } else if (d.tool === 'line') {
+                ctx.moveTo(d.x1, d.y1); ctx.lineTo(d.x2, d.y2);
+            } else if (d.tool === 'hray') {
+                ctx.moveTo(0, d.y1); ctx.lineTo(canvas.width, d.y1);
+                ctx.strokeStyle = '#f59e0b';
+            } else if (d.tool === 'rect') {
+                ctx.strokeRect(d.x1, d.y1, d.x2 - d.x1, d.y2 - d.y1);
+            } else if (d.tool === 'fib') {
+                const levels = [0, 0.236, 0.382, 0.5, 0.618, 1];
+                const dy = d.y2 - d.y1;
+                levels.forEach((l, i) => {
+                    const y = d.y1 + dy * l;
+                    ctx.beginPath();
+                    ctx.strokeStyle = `hsl(${200 + i * 25}, 80%, 60%)`;
+                    ctx.setLineDash([4, 4]);
+                    ctx.moveTo(d.x1, y); ctx.lineTo(d.x2, y);
+                    ctx.stroke();
+                    ctx.fillStyle = ctx.strokeStyle;
+                    ctx.font = '10px monospace';
+                    ctx.fillText(`${(l * 100).toFixed(1)}%`, d.x2 + 4, y + 3);
+                    ctx.setLineDash([]);
+                });
+                return;
+            }
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+        };
+
+        allDrawings.forEach(d => drawShape(d, ctx));
+        if (inProgress) drawShape(inProgress, ctx);
+    };
+
+    const handleCanvasMouseDown = (e) => {
+        if (activeTool === 'crosshair') return;
+        const pos = getCanvasPos(e);
+        drawState.current = { isDrawing: true, startX: pos.x, startY: pos.y, currentPath: [pos] };
+    };
+
+    const handleCanvasMouseMove = (e) => {
+        if (!drawState.current.isDrawing) return;
+        const pos = getCanvasPos(e);
+        const { startX, startY, currentPath } = drawState.current;
+        currentPath.push(pos);
+        const preview = { tool: activeTool, x1: startX, y1: startY, x2: pos.x, y2: pos.y, path: [...currentPath], color: '#3b82f6', width: 2 };
+        redrawCanvas(drawings, preview);
+    };
+
+    const handleCanvasMouseUp = (e) => {
+        if (!drawState.current.isDrawing) return;
+        const pos = getCanvasPos(e);
+        const { startX, startY, currentPath } = drawState.current;
+        drawState.current.isDrawing = false;
+
+        if (activeTool === 'eraser') {
+            setDrawings([]);
+            const ctx = drawingCanvasRef.current.getContext('2d');
+            ctx.clearRect(0, 0, drawingCanvasRef.current.width, drawingCanvasRef.current.height);
+            return;
+        }
+        const newDrawing = { tool: activeTool, x1: startX, y1: startY, x2: pos.x, y2: pos.y, path: currentPath, color: '#3b82f6', width: 2 };
+        const updated = [...drawings, newDrawing];
+        setDrawings(updated);
+        redrawCanvas(updated);
+    };
+
+    // Keep canvas sized correctly
+    useEffect(() => {
+        const resize = () => {
+            if (!drawingCanvasRef.current || !containerRef.current) return;
+            drawingCanvasRef.current.width = containerRef.current.offsetWidth;
+            drawingCanvasRef.current.height = containerRef.current.offsetHeight;
+            redrawCanvas(drawings);
+        };
+        resize();
+        window.addEventListener('resize', resize);
+        return () => window.removeEventListener('resize', resize);
+    }, [drawings]);
+
+    const toggleIndicator = (key) => setActiveIndicators(prev => ({ ...prev, [key]: !prev[key] }));
+
+    const tools = [
+        { id: 'crosshair', icon: 'crosshair', label: 'Crosshair' },
+        { id: 'pen', icon: 'pencil', label: 'Freehand Pen' },
+        { id: 'line', icon: 'minus', label: 'Trend Line' },
+        { id: 'hray', icon: 'align-center-horizontal', label: 'Horizontal Ray' },
+        { id: 'rect', icon: 'square', label: 'Rectangle' },
+        { id: 'fib', icon: 'git-branch', label: 'Fibonacci Levels' },
+        { id: 'eraser', icon: 'eraser', label: 'Eraser' },
+    ];
+
+    const chartTypes = [
+        { id: 'candlestick', icon: 'candlestick-chart', label: 'Candlestick' },
+        { id: 'bar', icon: 'bar-chart-2', label: 'Bars' },
+        { id: 'line', icon: 'trending-up', label: 'Line' },
+        { id: 'area', icon: 'activity', label: 'Area' },
+    ];
+
+    const indicators = [
+        { id: 'sma14', label: 'SMA 14', color: '#facc15' },
+        { id: 'sma50', label: 'SMA 50', color: '#a855f7' },
+        { id: 'ema21', label: 'EMA 21', color: '#06b6d4' },
+        { id: 'bb', label: 'Bollinger', color: '#94a3b8' },
+    ];
+
+    const toolCursor = activeTool === 'crosshair' ? 'crosshair' : activeTool === 'eraser' ? 'cell' : 'crosshair';
+
+    return (
+        <div className="flex flex-col w-full h-full select-none">
+            {/* Toolbar */}
+            {!compact && (
+                <div className="flex items-center gap-1 px-2 py-1.5 bg-dark border-b border-slate-800 flex-wrap shrink-0 z-10">
+                    {/* Chart type buttons */}
+                    <div className="flex items-center gap-0.5 border-r border-slate-700 pr-2 mr-1">
+                        {chartTypes.map(ct => (
+                            <button key={ct.id} onClick={() => setChartType(ct.id)} title={ct.label}
+                                className={`p-1.5 rounded transition text-xs ${chartType === ct.id ? 'bg-primary text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
+                                <i data-lucide={ct.icon} className="w-3.5 h-3.5"></i>
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Drawing tools */}
+                    <div className="flex items-center gap-0.5 border-r border-slate-700 pr-2 mr-1">
+                        {tools.map(t => (
+                            <button key={t.id} onClick={() => setActiveTool(t.id)} title={t.label}
+                                className={`p-1.5 rounded transition ${activeTool === t.id ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-slate-400 hover:bg-slate-800'}`}>
+                                <i data-lucide={t.icon} className="w-3.5 h-3.5"></i>
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Indicators */}
+                    <div className="flex items-center gap-1 flex-wrap">
+                        {indicators.map(ind => (
+                            <button key={ind.id} onClick={() => toggleIndicator(ind.id)}
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold border transition ${activeIndicators[ind.id] ? 'text-white shadow-sm' : 'text-slate-500 border-slate-700 hover:border-slate-500'}`}
+                                style={activeIndicators[ind.id] ? { borderColor: ind.color, backgroundColor: ind.color + '25', color: ind.color } : {}}>
+                                {ind.label}
+                            </button>
+                        ))}
+                        <button onClick={() => setShowVolume(v => !v)}
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold border transition ${showVolume ? 'bg-slate-600/30 border-slate-500 text-slate-300' : 'border-slate-700 text-slate-500 hover:border-slate-500'}`}>
+                            VOL
+                        </button>
+                    </div>
+
+                    <div className="ml-auto flex items-center gap-2">
+                        {drawings.length > 0 && (
+                            <button onClick={() => { setDrawings([]); const ctx = drawingCanvasRef.current?.getContext('2d'); ctx?.clearRect(0,0,9999,9999); }}
+                                className="text-[10px] text-slate-500 hover:text-danger border border-slate-700 hover:border-danger/50 px-2 py-0.5 rounded transition">
+                                Clear All
+                            </button>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Chart + Canvas overlay */}
+            <div className="flex-1 relative min-h-0">
+                <div ref={containerRef} className="w-full h-full" />
+                <canvas
+                    ref={drawingCanvasRef}
+                    onMouseDown={handleCanvasMouseDown}
+                    onMouseMove={handleCanvasMouseMove}
+                    onMouseUp={handleCanvasMouseUp}
+                    style={{ position: 'absolute', inset: 0, cursor: toolCursor, pointerEvents: activeTool === 'crosshair' ? 'none' : 'all' }}
+                />
+            </div>
+        </div>
+    );
 };
+
+// Keep legacy alias for places that still render <RealtimeChart>
+const RealtimeChart = ({ data, type = "candlestick", height, showVolume = false, showIndicators = false }) => (
+    <ProChart data={data} compact={true} />
+);
+
+
 
 const OrderBook = ({ symbol, livePrice }) => {
     const [bids, setBids] = useState([]);
@@ -326,7 +582,8 @@ const Dashboard = () => {
                             high: candle.high,
                             low: candle.low,
                             close: candle.close,
-                            value: candle.close
+                            value: candle.close,
+                            volume: candle.volume
                         };
                         const lst = newHist[symbol];
                         if (lst.length > 0 && lst[lst.length - 1].time === nowSec) {
@@ -334,7 +591,7 @@ const Dashboard = () => {
                         } else {
                             lst.push(newCandle);
                         }
-                        if (lst.length > 100) lst.shift();
+                        if (lst.length > 300) lst.shift();
                     }
                     return newHist;
                 });
@@ -636,7 +893,7 @@ const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "S
                         </div>
                         
                         <div className="h-20 w-full pointer-events-none mt-2">
-                            <RealtimeChart data={priceHistory[symbol] || []} type="line" height={80} />
+                            <ProChart data={priceHistory[symbol] || []} compact={true} />
                         </div>
 
                         <div className="text-2xl font-mono mt-auto pt-2">₹{price.toFixed(2)}</div>
@@ -656,15 +913,11 @@ const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "S
                             <button onClick={()=>setSelectedStock(null)} className="text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-full w-8 h-8 flex items-center justify-center transition focus:outline-none">&times;</button>
                         </div>
                         
-                        <div className="flex gap-4 mb-2">
-                            <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer hover:text-primary"><input type="checkbox" checked={showIndicators} onChange={e=>setShowIndicators(e.target.checked)} className="rounded bg-slate-900 border-slate-700" /> SMA 14/50</label>
-                            <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer hover:text-primary"><input type="checkbox" checked={showVolume} onChange={e=>setShowVolume(e.target.checked)} className="rounded bg-slate-900 border-slate-700" /> Volume Profile</label>
-                        </div>
                         <div className="flex flex-col md:flex-row gap-4 mb-6">
-                            <div className="h-48 flex-1 relative border border-slate-800 rounded bg-[#0f172a]/50">
-                                <RealtimeChart data={priceHistory[selectedStock] || []} type="candlestick" height={192} showVolume={showVolume} showIndicators={showIndicators} />
+                            <div className="flex-1 relative border border-slate-800 rounded bg-[#0f172a]/50 overflow-hidden" style={{height: '14rem'}}>
+                                <ProChart data={priceHistory[selectedStock] || []} symbol={selectedStock} compact={false} />
                             </div>
-                            <div className="h-48 w-full md:w-48 shrink-0">
+                            <div className="h-56 w-full md:w-48 shrink-0">
                                 <OrderBook symbol={selectedStock} livePrice={livePrices[selectedStock]} />
                             </div>
                         </div>
@@ -1598,7 +1851,7 @@ const ProTerminalTab = ({ livePrices, priceHistory }) => {
                             <span className="text-primary font-bold font-mono text-xl bg-slate-900 px-3 py-1 rounded border border-slate-800 shadow-inner">₹{(livePrices[symbol] || 0).toFixed(2)}</span>
                         </div>
                         <div className="flex-1 w-full relative mt-0 rounded-lg border border-slate-800 bg-[#0f172a]/30 overflow-hidden">
-                            <RealtimeChart data={priceHistory[symbol] || []} type="candlestick" height={null} showVolume={true} showIndicators={true} />
+                            <ProChart data={priceHistory[symbol] || []} symbol={symbol} compact={false} />
                         </div>
                     </div>
                 ))}
