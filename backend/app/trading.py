@@ -280,7 +280,7 @@ async def remove_watchlist(symbol: str, current_user: User = Depends(get_current
 
 @router.get("/orders", response_model=List[OrderResponse])
 async def get_orders(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Order).where(Order.user_id == current_user.id).order_by(Order.timestamp.desc()))
+    result = await db.execute(select(Order).where(Order.user_id == current_user.id).order_by(Order.created_at.desc()))
     return result.scalars().all()
 
 @router.get("/bots", response_model=List[TradingBotResponse])
@@ -840,3 +840,247 @@ async def bid_ipo(symbol: str, current_user: User = Depends(get_current_user), d
     
     await db.commit()
     return {"status": "success", "message": "Bid locked successfully."}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OPTIONS CHAIN WITH BLACK-SCHOLES GREEKS
+# ─────────────────────────────────────────────────────────────────────────────
+import math
+
+def _norm_cdf(x):
+    return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
+
+def _norm_pdf(x):
+    return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
+
+def black_scholes_greeks(S, K, T, r, sigma, option_type="call"):
+    """Returns (price, delta, gamma, theta, vega, iv(=sigma)) using BSM."""
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return {"price": 0, "delta": 0, "gamma": 0, "theta": 0, "vega": 0, "iv": 0}
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    gamma = _norm_pdf(d1) / (S * sigma * math.sqrt(T))
+    vega  = S * _norm_pdf(d1) * math.sqrt(T) / 100  # per 1% move in IV
+    if option_type == "call":
+        price  = S * _norm_cdf(d1) - K * math.exp(-r * T) * _norm_cdf(d2)
+        delta  = _norm_cdf(d1)
+        theta  = (-S * _norm_pdf(d1) * sigma / (2 * math.sqrt(T))
+                  - r * K * math.exp(-r * T) * _norm_cdf(d2)) / 365
+    else:
+        price  = K * math.exp(-r * T) * _norm_cdf(-d2) - S * _norm_cdf(-d1)
+        delta  = _norm_cdf(d1) - 1
+        theta  = (-S * _norm_pdf(d1) * sigma / (2 * math.sqrt(T))
+                  + r * K * math.exp(-r * T) * _norm_cdf(-d2)) / 365
+    return {
+        "price": round(max(price, 0), 2),
+        "delta": round(delta, 4),
+        "gamma": round(gamma, 6),
+        "theta": round(theta, 4),
+        "vega":  round(vega, 4),
+        "iv":    round(sigma * 100, 2)
+    }
+
+@router.get("/options/chain/{symbol}")
+async def get_options_chain(symbol: str, current_user: User = Depends(get_current_user)):
+    S = stock_prices.get(symbol)
+    if not S:
+        raise HTTPException(404, f"Symbol {symbol} not found")
+    r = 0.07       # risk-free rate (RBI repo ~7%)
+    T = 30 / 365   # 30-day expiry
+    sigma = 0.25   # base IV ~25%
+    # Adjust vol for crypto and high-beta stocks
+    if "_INR" in symbol:
+        sigma = 0.80
+    elif symbol in ("NIFTY_50", "SENSEX", "BANKNIFTY"):
+        sigma = 0.15
+
+    # Build ATM ± 10 strikes at ~0.5% intervals
+    step = round(S * 0.005, 0) or 1
+    atm  = round(S / step) * step
+    strikes = [round(atm + step * i, 2) for i in range(-10, 11)]
+
+    chain = []
+    for K in strikes:
+        call = black_scholes_greeks(S, K, T, r, sigma, "call")
+        put  = black_scholes_greeks(S, K, T, r, sigma, "put")
+        moneyness = "ATM" if K == atm else ("ITM" if K < atm else "OTM")
+        chain.append({
+            "strike": K,
+            "moneyness": moneyness,
+            "call": call,
+            "put":  put,
+        })
+    return {"symbol": symbol, "spot": S, "expiry_days": 30, "chain": chain}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PORTFOLIO RISK ANALYTICS
+# ─────────────────────────────────────────────────────────────────────────────
+# Static betas vs NIFTY_50 (approximate real-world betas)
+ASSET_BETAS = {
+    "RELIANCE": 1.05, "TCS": 0.85, "HDFCBANK": 1.1, "INFY": 0.9,
+    "ICICIBANK": 1.2, "SBIN": 1.3, "BAJFINANCE": 1.4, "AXISBANK": 1.25,
+    "KOTAKBANK": 1.0, "ADANIENT": 1.5, "TATAMOTORS": 1.35, "MARUTI": 0.95,
+    "WIPRO": 0.8, "HCLTECH": 0.88, "NTPC": 0.75, "ONGC": 1.1,
+    "BTC_INR": 2.5, "ETH_INR": 2.8, "SOL_INR": 3.2, "DOGE_INR": 3.5,
+    "NIFTY_50": 1.0, "BANKNIFTY": 1.1, "SENSEX": 1.0,
+}
+
+@router.get("/portfolio/risk")
+async def get_portfolio_risk(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    port_res = await db.execute(select(Portfolio).where(Portfolio.user_id == current_user.id))
+    items = port_res.scalars().all()
+    if not items:
+        return {"portfolio_beta": 0, "var_95": 0, "sharpe": 0, "allocation": [], "total_value": 0}
+
+    total_value = sum((stock_prices.get(i.symbol, i.avg_price) * i.quantity) for i in items)
+    if total_value == 0:
+        return {"portfolio_beta": 0, "var_95": 0, "sharpe": 0, "allocation": [], "total_value": 0}
+
+    # Weighted portfolio beta
+    portfolio_beta = 0.0
+    allocation = []
+    for item in items:
+        ltp = stock_prices.get(item.symbol, item.avg_price)
+        val = ltp * item.quantity
+        weight = val / total_value
+        beta = ASSET_BETAS.get(item.symbol, 1.0)
+        portfolio_beta += weight * beta
+        pnl = (ltp - item.avg_price) * item.quantity
+        allocation.append({
+            "symbol": item.symbol,
+            "value": round(val, 2),
+            "weight_pct": round(weight * 100, 2),
+            "beta": beta,
+            "pnl": round(pnl, 2),
+        })
+
+    # VaR (95%) using Variance-Covariance method
+    # Assumes daily return std of NIFTY ~1% * beta
+    daily_vol = portfolio_beta * 0.01  # ~1% market daily vol
+    var_95 = total_value * daily_vol * 1.645  # z-score for 95%
+
+    # Estimated Sharpe — using realized PnL / VaR as proxy
+    total_pnl = sum(a["pnl"] for a in allocation)
+    risk_free_daily = 0.07 / 365
+    sharpe = (total_pnl / total_value - risk_free_daily) / (daily_vol or 0.001) if total_value else 0
+
+    return {
+        "portfolio_beta": round(portfolio_beta, 3),
+        "var_95": round(var_95, 2),
+        "sharpe": round(sharpe, 3),
+        "total_value": round(total_value, 2),
+        "allocation": sorted(allocation, key=lambda x: -x["value"])
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOCIAL SENTIMENT FEED
+# ─────────────────────────────────────────────────────────────────────────────
+import time as _time
+
+_sentiment_store = []   # in-memory rolling buffer
+
+SENTIMENT_USERS = [
+    "AlphaBull", "MoonWalker99", "HODL_Master", "BearHunter_X", "QuantKing",
+    "DalalStreetPro", "NiftyTrader", "WallStWhale", "RetailRebel", "ZeroToHero",
+    "TechBullRun", "ValueSeeker", "SwingKing99", "DeepValueFund", "MomentumX",
+]
+
+SENTIMENT_TEMPLATES = [
+    ("{sym} 🚀 breaking resistance! Big move incoming.", "BULLISH"),
+    ("just loaded more {sym} here. Adding to my core.", "BULLISH"),
+    ("{sym} pattern looks like a cup-and-handle formation 🏆", "BULLISH"),
+    ("{sym} volume surge — smart money accumulating 🐋", "BULLISH"),
+    ("Sold my {sym} position today. Not worth the risk.", "BEARISH"),
+    ("{sym} showing classic distribution pattern. Selling.", "BEARISH"),
+    ("Shorts on {sym} paying off nicely today 📉", "BEARISH"),
+    ("{sym} earnings miss imminent. Watch out bears!", "BEARISH"),
+    ("{sym} just crossed the 200-DMA. Watching closely.", "NEUTRAL"),
+    ("Consolidation in {sym} — sideways action for now.", "NEUTRAL"),
+    ("{sym} support holding strong at key level. Neutral here.", "NEUTRAL"),
+]
+
+def _generate_sentiment_post():
+    import random as _r
+    sym = _r.choice(list(stock_prices.keys()))
+    tpl, sent = _r.choice(SENTIMENT_TEMPLATES)
+    return {
+        "id": int(_time.time() * 1000) + _r.randint(0, 999),
+        "user": _r.choice(SENTIMENT_USERS),
+        "symbol": sym,
+        "text": tpl.format(sym=sym),
+        "sentiment": sent,
+        "likes": _r.randint(0, 420),
+        "timestamp": _time.time(),
+    }
+
+@router.get("/sentiment/feed")
+async def get_sentiment_feed(current_user: User = Depends(get_current_user)):
+    """Return last 30 sentiment posts, generating if empty."""
+    import random as _r
+    if len(_sentiment_store) < 15:
+        for _ in range(20):
+            _sentiment_store.append(_generate_sentiment_post())
+        _sentiment_store.sort(key=lambda x: -x["timestamp"])
+    return _sentiment_store[-30:]
+
+@router.get("/sentiment/trending")
+async def get_trending_sentiment(current_user: User = Depends(get_current_user)):
+    """Return top mentioned symbols with bull/bear scores from recent posts."""
+    from collections import Counter, defaultdict
+    import random as _r
+    if len(_sentiment_store) < 5:
+        for _ in range(15):
+            _sentiment_store.append(_generate_sentiment_post())
+
+    counts = Counter(p["symbol"] for p in _sentiment_store)
+    bull_counts = defaultdict(int)
+    bear_counts = defaultdict(int)
+    for p in _sentiment_store:
+        if p["sentiment"] == "BULLISH": bull_counts[p["symbol"]] += 1
+        elif p["sentiment"] == "BEARISH": bear_counts[p["symbol"]] += 1
+
+    trending = []
+    for sym, cnt in counts.most_common(10):
+        total = bull_counts[sym] + bear_counts[sym] + 1
+        trending.append({
+            "symbol": sym,
+            "mentions": cnt,
+            "bull_pct": round(bull_counts[sym] / total * 100),
+            "bear_pct": round(bear_counts[sym] / total * 100),
+            "price": stock_prices.get(sym, 0),
+        })
+    return trending
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BRACKET ORDER PATCH (modify SL/TP on live order)  
+# ─────────────────────────────────────────────────────────────────────────────
+from pydantic import BaseModel as _BM
+
+class BracketUpdate(_BM):
+    stop_loss_price: float | None = None
+    take_profit_price: float | None = None
+
+@router.patch("/order/{order_id}/brackets")
+async def update_brackets(
+    order_id: int,
+    body: BracketUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await db.execute(select(Order).where(Order.id == order_id).where(Order.user_id == current_user.id))
+    order = res.scalars().first()
+    if not order:
+        raise HTTPException(404, "Order not found")
+    if body.stop_loss_price is not None:
+        order.stop_loss_price = body.stop_loss_price
+    if body.take_profit_price is not None:
+        order.take_profit_price = body.take_profit_price
+    await db.commit()
+    return {"status": "success", "message": "Brackets updated"}
+
