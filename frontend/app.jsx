@@ -6,14 +6,17 @@ if (!LightweightCharts) console.error("LightweightCharts is not loaded!");
 
 // ─── ProChart: Advanced Chart with Drawing Tools & Indicators ───────────────
 
-const ProChart = ({ data, symbol, compact = false }) => {
+const ProChart = ({ data, symbol, compact = false, brackets = null, patterns = [] }) => {
     const containerRef = useRef();
     const chartRef = useRef();
     const seriesRef = useRef();
     const volSeriesRef = useRef();
     const indicatorSeriesRef = useRef({});
+    const bracketLinesRef = useRef({}); // { sl: PriceLine, tp: PriceLine, entry: PriceLine }
+    const patternSeriesRef = useRef([]); 
     const drawingCanvasRef = useRef();
     const overlayRef = useRef();
+    const audioCtx = useRef(null);
 
     const [chartType, setChartType] = useState('candlestick');
     const [activeTool, setActiveTool] = useState('crosshair');
@@ -139,6 +142,44 @@ const ProChart = ({ data, symbol, compact = false }) => {
 
     }, [data, showVolume, activeIndicators, chartType]);
 
+    // Update Bracket Lines (Visualizer)
+    useEffect(() => {
+        if (!seriesRef.current || !brackets) {
+            // Clear existing lines if brackets removed
+            Object.values(bracketLinesRef.current).forEach(line => {
+                if (line) try { seriesRef.current.removePriceLine(line); } catch(e) {}
+            });
+            bracketLinesRef.current = {};
+            return;
+        }
+
+        const series = seriesRef.current;
+        const refs = bracketLinesRef.current;
+
+        const updateLine = (key, price, color, title) => {
+            if (refs[key]) {
+                try { series.removePriceLine(refs[key]); } catch(e) {}
+            }
+            if (price) {
+                refs[key] = series.createPriceLine({
+                    price: price,
+                    color: color,
+                    lineWidth: 2,
+                    lineStyle: 2, // Dashed
+                    axisLabelVisible: true,
+                    title: title,
+                });
+            } else {
+                refs[key] = null;
+            }
+        };
+
+        updateLine('sl', brackets.stopLoss, '#ef4444', 'STOP LOSS');
+        updateLine('tp', brackets.takeProfit, '#22c55e', 'TAKE PROFIT');
+        updateLine('entry', brackets.entry, '#3b82f6', 'ENTRY');
+
+    }, [brackets, seriesRef.current]);
+
     // Drawing on canvas overlay
     const getCanvasPos = (e) => {
         const rect = drawingCanvasRef.current.getBoundingClientRect();
@@ -189,6 +230,57 @@ const ProChart = ({ data, symbol, compact = false }) => {
         };
 
         allDrawings.forEach(d => drawShape(d, ctx));
+
+        // Draw Pattern Discovery Overlays (Refined)
+        if (patterns && patterns.length > 0) {
+            patterns.forEach(p => {
+                ctx.beginPath();
+                ctx.strokeStyle = p.sentiment === 'BULLISH' ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)';
+                ctx.lineWidth = 3;
+                ctx.setLineDash([5, 3]);
+                
+                // Better mock scaling: x: 0-100 (perc), y: price range
+                const prices = data.length > 0 ? data.map(d => d.close) : [p.points[0].y];
+                const minP = Math.min(...prices) * 0.998;
+                const maxP = Math.max(...prices) * 1.002;
+                const range = maxP - minP || 1;
+
+                p.points.forEach((pt, idx) => {
+                    const px = (pt.x / 100) * canvas.width;
+                    const py = canvas.height - ((pt.y - minP) / range) * canvas.height;
+                    if (idx === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+                });
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // Draw confidence points
+                p.points.forEach(pt => {
+                    const px = (pt.x / 100) * canvas.width;
+                    const py = canvas.height - ((pt.y - minP) / range) * canvas.height;
+                    ctx.beginPath();
+                    ctx.arc(px, py, 4, 0, Math.PI * 2);
+                    ctx.fillStyle = ctx.strokeStyle;
+                    ctx.fill();
+                });
+
+                // Label Badge
+                const first = p.points[0];
+                const bx = (first.x / 100) * canvas.width;
+                const by = canvas.height - ((first.y - minP) / range) * canvas.height - 15;
+                const label = `${p.type} ${p.confidence}%`;
+                const textWidth = ctx.measureText(label).width;
+                
+                ctx.fillStyle = p.sentiment === 'BULLISH' ? '#22c55e' : '#ef4444';
+                ctx.fillRect(bx - 5, by - 12, textWidth + 10, 16);
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 10px sans-serif';
+                ctx.fillText(label, bx, by);
+                
+                // Sonic Cue (on new pattern)
+                if (window.playSonicCue) window.playSonicCue(p.sentiment === 'BULLISH' ? 440 : 220);
+            });
+        }
+
         if (inProgress) drawShape(inProgress, ctx);
     };
 
@@ -236,7 +328,7 @@ const ProChart = ({ data, symbol, compact = false }) => {
         resize();
         window.addEventListener('resize', resize);
         return () => window.removeEventListener('resize', resize);
-    }, [drawings]);
+    }, [drawings, patterns]);
 
     const toggleIndicator = (key) => setActiveIndicators(prev => ({ ...prev, [key]: !prev[key] }));
 
@@ -543,6 +635,25 @@ const Dashboard = () => {
     const [showTape, setShowTape] = useState(false);
     const ws = useRef(null);
 
+    // Sonic Trading Initialization
+    useEffect(() => {
+        window.playSonicCue = (freq) => {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(freq, ctx.currentTime);
+                gain.gain.setValueAtTime(0.05, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.5);
+            } catch(e) {}
+        };
+    }, []);
+
     const loadData = async () => {
         try {
             const w = await apiFetch("/payments/wallet", "GET", null, token);
@@ -732,6 +843,9 @@ const Dashboard = () => {
                         <button onClick={() => handleTabChange('pro_terminal')} className={`w-full flex items-center p-3 rounded-lg text-left transition font-bold shadow-lg ${activeTab==='pro_terminal' ? 'bg-primary/20 text-white border border-primary/50' : 'bg-slate-900 border border-slate-800 text-primary hover:bg-slate-800'}`}>
                             <i data-lucide="layout-grid" className="mr-3 text-primary"></i> PRO Terminal
                         </button>
+                        <button onClick={() => handleTabChange('broker')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='broker' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
+                            <i data-lucide="briefcase" className="mr-3 text-slate-400"></i> Broker Dashboard
+                        </button>
                         <button onClick={() => handleTabChange('heatmap')} className={`w-full flex items-center p-3 rounded-lg text-left transition ${activeTab==='heatmap' ? 'bg-primary/10 text-primary' : 'hover:bg-slate-800'}`}>
                             <i data-lucide="map" className="mr-3 text-blue-400"></i> Sector Heatmap
                         </button>
@@ -833,7 +947,8 @@ const Dashboard = () => {
                             </>
                         )}
                         {activeTab === 'orders' && <OrdersTab orders={orders} onRefresh={loadData} token={token} />}
-                        {activeTab === 'pro_terminal' && <ProTerminalTab livePrices={livePrices} priceHistory={priceHistory} />}
+                        {activeTab === 'pro_terminal' && <ProTerminalTab livePrices={livePrices} priceHistory={priceHistory} orders={orders} />}
+                        {activeTab === 'broker' && <BrokerDashboardTab token={token} />}
                         {activeTab === 'heatmap' && <HeatmapTab livePrices={livePrices} priceHistory={priceHistory} />}
                         {activeTab === 'global_markets' && <GlobalMarketTab />}
                         {activeTab === 'options_chain' && <OptionsChainTab token={token} livePrices={livePrices} />}
@@ -996,7 +1111,16 @@ const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "S
                         
                         <div className="flex flex-col md:flex-row gap-4 mb-6">
                             <div className="flex-1 relative border border-slate-800 rounded bg-[#0f172a]/50 overflow-hidden" style={{height: '14rem'}}>
-                                <ProChart data={priceHistory[selectedStock] || []} symbol={selectedStock} compact={false} />
+                                <ProChart 
+                                    data={priceHistory[selectedStock] || []} 
+                                    symbol={selectedStock} 
+                                    compact={false} 
+                                    brackets={{
+                                        stopLoss: parseFloat(stopLoss) || 0,
+                                        takeProfit: parseFloat(takeProfit) || 0,
+                                        entry: orderType === 'LIMIT' ? parseFloat(limitPrice) : (livePrices[selectedStock] || 0)
+                                    }}
+                                />
                             </div>
                             <div className="h-56 w-full md:w-48 shrink-0">
                                 <OrderBook symbol={selectedStock} livePrice={livePrices[selectedStock]} />
@@ -1911,7 +2035,85 @@ const WalletTab = ({ balance, token }) => {
     );
 };
 
-const ProTerminalTab = ({ livePrices, priceHistory }) => {
+const PsychologyMeter = ({ token }) => {
+    const [bias, setBias] = useState({ score: 0.5, recommendation: 'STABLE', tilt_detected: false });
+    
+    useEffect(() => {
+        const fetchBias = async () => {
+            try {
+                const data = await apiFetch("/trade/psychology/bias", "GET", null, token);
+                setBias(data);
+            } catch(e) {}
+        };
+        fetchBias();
+        const int = setInterval(fetchBias, 10000); 
+        return () => clearInterval(int);
+    }, [token]);
+
+    return (
+        <div className={`px-4 py-2 rounded-xl border backdrop-blur-md shadow-lg transition-all duration-500 ${bias.tilt_detected ? 'bg-red-500/20 border-red-500/40 animate-pulse' : 'bg-slate-900/40 border-white/5'}`}>
+            <div className="flex items-center gap-3">
+                <div className="relative w-8 h-8">
+                    <svg className="w-full h-full transform -rotate-90">
+                        <circle cx="16" cy="16" r="14" fill="transparent" stroke="rgba(255,255,255,0.05)" strokeWidth="3" />
+                        <circle cx="16" cy="16" r="14" fill="transparent" 
+                            stroke={bias.tilt_detected ? '#ef4444' : '#3b82f6'} 
+                            strokeWidth="3" 
+                            strokeDasharray={88} 
+                            strokeDashoffset={88 - (88 * bias.score)}
+                            className="transition-all duration-1000" 
+                        />
+                    </svg>
+                    <div className="absolute inset-0 flex items-center justify-center text-[8px] font-black text-white">
+                        {Math.round(bias.score * 100)}%
+                    </div>
+                </div>
+                <div>
+                    <div className="text-[9px] font-black text-slate-500 uppercase flex items-center gap-1">
+                        <i data-lucide="brain" className="w-3 h-3"></i> Bias Shield
+                    </div>
+                    <div className={`text-[10px] font-bold leading-none mt-0.5 ${bias.tilt_detected ? 'text-red-400' : 'text-blue-400'}`}>
+                        {bias.tilt_detected ? 'REVENGE DETECTED' : bias.recommendation}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const OrderBookDepth = ({ symbol }) => {
+    return (
+        <div className="h-full flex flex-col font-mono text-[10px]">
+            <div className="flex-1 overflow-y-auto">
+                <div className="p-2 space-y-1">
+                    {[...Array(6)].map((_, i) => (
+                        <div key={i} className="flex justify-between items-center px-2 py-0.5 bg-red-400/5 hover:bg-red-400/10 transition-colors group">
+                            <span className="text-red-400 font-bold">{(22000 + (6-i)*0.5).toFixed(2)}</span>
+                            <div className="flex-1 mx-2 h-1 bg-red-400/10 rounded-full overflow-hidden relative">
+                                <div className="h-full bg-red-400/40" style={{ width: `${30 + Math.random()*60}%` }}></div>
+                            </div>
+                            <span className="text-slate-500 font-bold group-hover:text-red-400">{Math.floor(Math.random()*200)}</span>
+                        </div>
+                    ))}
+                    <div className="py-2 text-center border-y border-white/10 my-1 bg-white/5 font-black text-white text-xs">
+                        22,000.45 <span className="text-[8px] opacity-40 ml-1">LTP</span>
+                    </div>
+                    {[...Array(6)].map((_, i) => (
+                        <div key={i} className="flex justify-between items-center px-2 py-0.5 bg-emerald-400/5 hover:bg-emerald-400/10 transition-colors group">
+                            <span className="text-emerald-400 font-bold">{(22000 - (i+1)*0.5).toFixed(2)}</span>
+                            <div className="flex-1 mx-2 h-1 bg-emerald-400/10 rounded-full overflow-hidden relative">
+                                <div className="h-full bg-emerald-400/40" style={{ width: `${20 + Math.random()*70}%` }}></div>
+                            </div>
+                            <span className="text-slate-500 font-bold group-hover:text-emerald-400">{Math.floor(Math.random()*250)}</span>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        </div>
+    )
+}
+
+const ProTerminalTab = ({ livePrices, priceHistory, orders, token }) => {
     const allSymbols = Object.keys(livePrices);
     const defaultSymbols = allSymbols.length >= 4 
         ? allSymbols.filter(s => !s.includes('_INR')).slice(0, 4) 
@@ -1921,6 +2123,25 @@ const ProTerminalTab = ({ livePrices, priceHistory }) => {
     const [layout, setLayout] = useState('2x2'); // '2x2', '1+2', '1x1'
     const [editingPanel, setEditingPanel] = useState(null);
     const [searchQuery, setSearchQuery] = useState('');
+    const [showPatterns, setShowPatterns] = useState(false);
+    const [detectedPatterns, setDetectedPatterns] = useState({}); // { symbol: [patterns] }
+
+    const fetchPatterns = async (symbol) => {
+        try {
+            const data = await apiFetch(`/trade/patterns/${symbol}`, 'GET');
+            if (data && data.patterns) {
+                setDetectedPatterns(prev => ({ ...prev, [symbol]: data.patterns }));
+            }
+        } catch(e) {}
+    };
+
+    useEffect(() => {
+        if (showPatterns) {
+            panelSymbols.forEach(sym => {
+                if (!detectedPatterns[sym]) fetchPatterns(sym);
+            });
+        }
+    }, [showPatterns, panelSymbols]);
     
     const panelCount = layout === '2x2' ? 4 : layout === '1+2' ? 3 : 1;
     const displaySymbols = panelSymbols.slice(0, panelCount);
@@ -1945,85 +2166,115 @@ const ProTerminalTab = ({ livePrices, priceHistory }) => {
 
     return (
         <div className="h-full flex flex-col absolute inset-0 md:relative md:inset-auto p-2 md:p-0">
-            {/* Toolbar */}
-            <div className="flex flex-wrap justify-between items-center mb-3 gap-2">
-                <div>
-                    <h2 className="text-xl font-bold flex items-center gap-2 text-white">
-                        <i data-lucide="layout-grid" className="text-primary w-5 h-5"></i> Pro Terminal
+            {/* Extended Toolbar */}
+            <div className="flex flex-wrap justify-between items-center mb-3 gap-2 px-1">
+                <div className="flex items-center gap-4">
+                    <h2 className="text-xl font-black italic bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
+                        PRO TERMINAL
                     </h2>
+                    <PsychologyMeter token={token} />
                 </div>
                 <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500">Layout:</span>
-                    {[{id:'1x1',label:'1'},{id:'1+2',label:'1+2'},{id:'2x2',label:'2×2'}].map(l => (
-                        <button key={l.id} onClick={() => setLayout(l.id)}
-                            className={`px-2 py-1 rounded text-xs font-bold border transition ${
-                                layout === l.id ? 'bg-primary text-white border-primary' : 'border-slate-700 text-slate-400 hover:border-slate-500'
-                            }`}>{l.label}</button>
-                    ))}
-                    <div className="text-xs text-primary font-bold bg-primary/10 border border-primary/30 px-2.5 py-1 rounded shadow-[0_0_10px_rgba(59,130,246,0.3)] animate-pulse">LIVE</div>
+                    <div className="flex bg-slate-800 p-0.5 rounded-lg mr-2 border border-slate-700">
+                        {[{id:'1x1',label:'1'},{id:'1+2',label:'1+2'},{id:'2x2',label:'2×2'}].map(l => (
+                            <button key={l.id} onClick={() => setLayout(l.id)}
+                                className={`px-2.5 py-1 rounded text-[10px] font-black uppercase transition ${
+                                    layout === l.id ? 'bg-primary text-white shadow-lg shadow-blue-500/20' : 'text-slate-500 hover:text-slate-300'
+                                }`}>{l.label}</button>
+                        ))}
+                    </div>
+                    <button onClick={() => setShowPatterns(!showPatterns)}
+                        className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-black transition border ${
+                            showPatterns ? 'bg-amber-500/10 text-amber-500 border-amber-500/30' : 'bg-slate-900/50 text-slate-500 border-white/5 hover:text-slate-300'
+                        }`}>
+                        <i data-lucide="brain" className="w-4 h-4"></i> AI PATTERNS
+                    </button>
+                    <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></div>
+                        <span className="text-[10px] font-black text-emerald-400 uppercase tracking-widest">Live Connectivity</span>
+                    </div>
                 </div>
             </div>
             
-            <div className={`grid ${gridClass} gap-3 flex-1 min-h-[70vh]`}>
-                {displaySymbols.map((symbol, idx) => {
-                    const hist = priceHistory[symbol] || [];
-                    const firstPrice = hist.length >= 2 ? hist[0].close : (livePrices[symbol] || 0);
-                    const liveP = livePrices[symbol] || 0;
-                    const pctChange = firstPrice ? ((liveP - firstPrice) / firstPrice * 100) : 0;
-                    return (
-                        <div key={idx}
-                            className={`bg-darker border border-slate-800 hover:border-primary/40 transition rounded-xl flex flex-col overflow-hidden shadow-2xl relative ${
-                                layout === '1+2' && idx === 0 ? 'md:col-span-2 md:row-span-2' : ''
-                            } min-h-[280px]`}>
-                            {/* Panel header */}
-                            <div className="flex justify-between items-center px-3 py-2 border-b border-slate-800 z-10 bg-dark shrink-0">
-                                <button 
-                                    onClick={() => setEditingPanel(idx)}
-                                    className="font-bold text-slate-100 flex items-center gap-2 hover:text-primary transition group"
-                                >
-                                    <span className="w-2 h-2 rounded-full bg-success animate-pulse shadow-[0_0_6px_#22c55e]"></span>
-                                    <span>{symbol}</span>
-                                    <i data-lucide="chevron-down" className="w-3 h-3 text-slate-500 group-hover:text-primary"></i>
-                                </button>
-                                <div className="flex items-center gap-3">
-                                    <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${pctChange >= 0 ? 'text-success bg-success/10' : 'text-danger bg-danger/10'}`}>
-                                        {pctChange >= 0 ? '+' : ''}{pctChange.toFixed(2)}%
-                                    </span>
-                                    <span className="text-primary font-bold font-mono text-base">₹{liveP.toFixed(2)}</span>
+            <div className="flex-1 flex gap-4 overflow-hidden">
+                <div className={`grid ${gridClass} gap-4 flex-1 overflow-hidden`}>
+                    {displaySymbols.map((symbol, idx) => {
+                        const hist = priceHistory[symbol] || [];
+                        const firstPrice = hist.length >= 2 ? hist[0].close : (livePrices[symbol] || 0);
+                        const liveP = livePrices[symbol] || 0;
+                        const pctChange = firstPrice ? ((liveP - firstPrice) / firstPrice * 100) : 0;
+                        return (
+                            <div key={idx}
+                                className={`bg-dark/60 border border-white/5 hover:border-blue-500/30 transition-all rounded-2xl flex flex-col overflow-hidden shadow-2xl relative group/chart ${
+                                    layout === '1+2' && idx === 0 ? 'md:col-span-2 md:row-span-1' : ''
+                                }`}>
+                                {/* Panel header */}
+                                <div className="flex justify-between items-center px-4 py-3 border-b border-white/5 z-10 bg-slate-900/40 backdrop-blur-xl shrink-0">
+                                    <button onClick={() => setEditingPanel(idx)} className="font-black text-white flex items-center gap-2 hover:text-blue-400 transition group tracking-tight text-sm uppercase italic">
+                                        <i data-lucide="crosshair" className="w-3.5 h-3.5 text-blue-400"></i>
+                                        <span>{symbol}</span>
+                                        <i data-lucide="search" className="w-3 h-3 text-slate-500 group-hover:text-blue-400 opacity-0 group-hover:opacity-100"></i>
+                                    </button>
+                                    <div className="flex items-center gap-4">
+                                        <span className={`text-[10px] font-black italic ${pctChange >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                            {pctChange >= 0 ? '▲' : '▼'}{Math.abs(pctChange).toFixed(2)}%
+                                        </span>
+                                        <span className="text-white font-black font-mono text-sm leading-none tabular-nums tracking-tighter">₹{liveP.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+                                    </div>
+                                </div>
+                                <div className="flex-1 w-full relative overflow-hidden bg-black/20">
+                                    {(() => {
+                                        const activeOrder = (orders || []).find(o => o.symbol === symbol && o.status === 'EXECUTED' && o.side === 'BUY');
+                                        const brackets = activeOrder ? { stopLoss: activeOrder.stop_loss_price, takeProfit: activeOrder.take_profit_price, entry: activeOrder.price } : null;
+                                        const patterns = showPatterns ? (detectedPatterns[symbol] || []) : [];
+                                        return <ProChart data={hist} symbol={symbol} compact={true} patterns={patterns} brackets={brackets} />;
+                                    })()}
                                 </div>
                             </div>
-                            <div className="flex-1 w-full relative overflow-hidden">
-                                <ProChart data={hist} symbol={symbol} compact={false} />
-                            </div>
-                        </div>
-                    );
-                })}
+                        );
+                    })}
+                </div>
+
+                {/* Institutional Sidebar (DOM) */}
+                <div className="hidden xl:flex w-72 bg-dark/40 rounded-2xl border border-white/5 flex-col overflow-hidden shadow-2xl backdrop-blur-md">
+                    <div className="p-4 border-b border-white/5 flex justify-between items-center bg-slate-900/60">
+                        <span className="text-[10px] font-black text-slate-200 tracking-widest flex items-center gap-2">
+                            <i data-lucide="layers" className="w-3.5 h-3.5 text-orange-400"></i> ORDER BOOK DEPTH
+                        </span>
+                        <div className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_#3b82f6] animate-pulse"></div>
+                    </div>
+                    <div className="flex-1 overflow-y-auto custom-scrollbar">
+                        <OrderBookDepth symbol={displaySymbols[0]} />
+                    </div>
+                    <div className="p-4 bg-slate-900/80 border-t border-white/5 text-[10px] font-medium text-slate-500 italic">
+                        Real-time liquidity heatmap from Institutional Gateways.
+                    </div>
+                </div>
             </div>
-            
+
             {/* Symbol Picker Modal */}
             {editingPanel !== null && (
-                <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-[200] p-4">
-                    <div className="bg-dark rounded-xl border border-slate-700 shadow-2xl w-full max-w-xs p-5">
-                        <h3 className="text-lg font-bold mb-3">Select Symbol for Panel {editingPanel + 1}</h3>
-                        <input
-                            autoFocus
-                            type="text"
-                            placeholder="Search symbols..."
-                            value={searchQuery}
-                            onChange={e => setSearchQuery(e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-white outline-none focus:border-primary mb-3 text-sm"
-                        />
-                        <div className="max-h-60 overflow-y-auto custom-scrollbar space-y-1">
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[200] p-4">
+                    <div className="bg-slate-900 rounded-3xl border border-white/10 shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-150">
+                        <div className="p-6 border-b border-white/5">
+                            <h3 className="text-lg font-black text-white mb-4 uppercase italic">Search Asset</h3>
+                            <div className="relative">
+                                <input autoFocus type="text" placeholder="Type symbol..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} 
+                                    className="w-full bg-slate-800 border-none rounded-xl px-12 py-4 text-white text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none" />
+                                <i data-lucide="search" className="absolute left-4 top-4 text-slate-500 w-5 h-5"></i>
+                            </div>
+                        </div>
+                        <div className="max-h-80 overflow-y-auto p-2 custom-scrollbar">
                             {filteredSymbols.map(sym => (
                                 <button key={sym} onClick={() => selectSymbol(sym)}
-                                    className="w-full text-left px-3 py-2 rounded hover:bg-primary/20 text-sm font-medium flex justify-between items-center group"
+                                    className="w-full text-left px-4 py-3 rounded-xl hover:bg-blue-600/10 text-sm font-bold text-slate-300 hover:text-blue-400 transition-all flex justify-between items-center group"
                                 >
                                     <span>{sym}</span>
-                                    <span className="text-slate-500 text-xs group-hover:text-primary">₹{(livePrices[sym]||0).toFixed(2)}</span>
+                                    <span className="text-[10px] font-mono p-1 bg-white/5 rounded text-slate-500 group-hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity">SELECT</span>
                                 </button>
                             ))}
                         </div>
-                        <button onClick={() => setEditingPanel(null)} className="mt-3 w-full text-slate-400 text-sm hover:text-white py-2 border border-slate-800 rounded">Cancel</button>
+                        <button onClick={() => setEditingPanel(null)} className="w-full p-4 text-slate-500 text-xs font-black uppercase tracking-widest bg-black/40 hover:text-white transition-colors">Close Search</button>
                     </div>
                 </div>
             )}
@@ -2114,9 +2365,186 @@ const IPOTab = ({ wallet, token }) => {
 
 // --- New Features Components ---
 
+const BrokerDashboardTab = ({ token }) => {
+    const [brokers, setBrokers] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [showConnect, setShowConnect] = useState(false);
+    const [setup2FA, setSetup2FA] = useState(false);
+    const [formData, setFormData] = useState({ broker_name: 'ALPACA', api_key: '', api_secret: '', is_live: false });
+
+    useEffect(() => { 
+        loadBrokers(); 
+        if (window.lucide) window.lucide.createIcons();
+    }, []);
+
+    const loadBrokers = async () => {
+        try {
+            const data = await apiFetch("/trade/brokers", "GET", null, token);
+            setBrokers(data || []);
+        } catch(e) {}
+    };
+
+    const handleConnect = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        try {
+            await apiFetch("/trade/brokers/connect", "POST", formData, token);
+            setShowConnect(false);
+            loadBrokers();
+        } catch(e) {
+            alert("Connection failed. Check your API credentials.");
+        }
+        setLoading(false);
+    };
+
+    return (
+        <div className="flex flex-col h-full gap-6 p-4 max-w-6xl mx-auto w-full animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="flex justify-between items-center bg-dark/40 backdrop-blur-xl p-6 rounded-2xl border border-white/5 shadow-2xl">
+                <div>
+                    <h2 className="text-3xl font-black bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent italic">BROKER HUB</h2>
+                    <p className="text-slate-400 text-sm font-medium tracking-tight">Manage your institutional execution gateways</p>
+                </div>
+                <div className="flex gap-3">
+                    <button onClick={() => setSetup2FA(true)} className="flex items-center gap-2 px-5 py-2.5 bg-slate-800/50 hover:bg-slate-700/50 text-slate-200 rounded-xl border border-white/5 transition-all font-bold text-sm">
+                        <i data-lucide="shield" className="w-4 h-4 text-emerald-400"></i>
+                        Security Settings
+                    </button>
+                    <button onClick={() => setShowConnect(true)} className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl shadow-lg shadow-blue-500/20 transition-all font-bold text-sm">
+                        <i data-lucide="link" className="w-4 h-4"></i>
+                        Connect Broker
+                    </button>
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="col-span-2 space-y-4">
+                    <h3 className="text-slate-300 font-bold flex items-center gap-2 px-2">
+                        <i data-lucide="activity" className="w-4 h-4 text-blue-400"></i> Connected Gateways
+                    </h3>
+                    {brokers.length === 0 ? (
+                        <div className="bg-slate-900/40 border border-dashed border-slate-800 rounded-2xl p-12 text-center">
+                            <i data-lucide="monitor" className="w-12 h-12 text-slate-700 mx-auto mb-4"></i>
+                            <p className="text-slate-500 font-medium">No active brokerage connections</p>
+                            <p className="text-slate-600 text-xs mt-1">Simulated execution is currently active</p>
+                        </div>
+                    ) : (
+                        brokers.map(b => (
+                            <div key={b.id} className="bg-slate-900/60 border border-white/5 p-5 rounded-2xl flex justify-between items-center group hover:bg-slate-900/80 transition-all">
+                                <div className="flex items-center gap-4">
+                                    <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20">
+                                        <i data-lucide="key" className="w-6 h-6 text-blue-400"></i>
+                                    </div>
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-bold text-slate-100">{b.broker_name}</span>
+                                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${b.is_live ? 'bg-orange-500/20 text-orange-400' : 'bg-slate-800 text-slate-400'}`}>
+                                                {b.is_live ? 'Live' : 'Paper'}
+                                            </span>
+                                        </div>
+                                        <div className="text-[10px] text-slate-500 font-mono mt-1">API Key: ****{b.id}88</div>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-6">
+                                    <div className="text-right">
+                                        <div className="flex items-center gap-1.5 text-emerald-400 text-xs font-bold justify-end">
+                                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></div>
+                                            Active
+                                        </div>
+                                        <div className="text-[10px] text-slate-500 mt-1">Latency: 14ms</div>
+                                    </div>
+                                    <button className="p-2 hover:bg-red-500/10 hover:text-red-400 text-slate-600 rounded-lg transition-colors">
+                                        <i data-lucide="smartphone" className="w-5 h-5"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        ))
+                    )}
+                </div>
+
+                <div className="space-y-6">
+                    <div className="bg-gradient-to-br from-indigo-900/40 to-slate-900/40 border border-indigo-500/10 p-6 rounded-2xl shadow-xl">
+                        <h4 className="font-bold text-white mb-4 flex items-center gap-2">
+                            <i data-lucide="shield" className="w-4 h-4 text-emerald-400"></i> Account Security
+                        </h4>
+                        <div className="space-y-4">
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-slate-400">2FA Protection</span>
+                                <span className="text-[10px] font-black bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded uppercase tracking-wider">Enabled</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-slate-400">Trading PIN</span>
+                                <span className="text-xs text-blue-400 underline cursor-pointer">Set PIN</span>
+                            </div>
+                            <div className="p-3 bg-red-500/10 rounded-xl border border-red-500/20 mt-2">
+                                <div className="flex gap-2 text-[10px] text-red-200 font-medium">
+                                    <i data-lucide="alert-circle" className="w-4 h-4 flex-shrink-0"></i>
+                                    Live trading requires mandatory IP white-listing.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {showConnect && (
+                <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+                    <div className="bg-slate-900 border border-white/10 w-full max-w-md rounded-3xl overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
+                        <div className="p-8">
+                            <h3 className="text-2xl font-black text-white mb-2">CONNECT GATEWAY</h3>
+                            <p className="text-slate-400 text-sm mb-6 font-medium italic">Link your institutional brokerage account</p>
+                            <form onSubmit={handleConnect} className="space-y-4">
+                                <div className="space-y-1.5">
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Broker Provider</label>
+                                    <select value={formData.broker_name} onChange={e => setFormData({...formData, broker_name: e.target.value})}
+                                        className="w-full bg-slate-800 border-white/5 rounded-xl px-4 py-3 text-slate-100 font-bold focus:ring-2 focus:ring-blue-500 outline-none appearance-none">
+                                        <option value="ALPACA">Alpaca (Global Stocks)</option>
+                                        <option value="BINANCE">Binance (Crypto)</option>
+                                        <option value="ZERODHA">Kite Zerodha (India)</option>
+                                        <option value="PAPER">Unified Paper Engine</option>
+                                    </select>
+                                </div>
+                                <div className="space-y-1.5">
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase px-1">API Key</label>
+                                    <input type="text" value={formData.api_key} onChange={e => setFormData({...formData, api_key: e.target.value})}
+                                        placeholder="Enter your public key" required
+                                        className="w-full bg-slate-800 border-white/5 rounded-xl px-4 py-3 text-slate-100 font-bold focus:ring-2 focus:ring-blue-500 outline-none" />
+                                </div>
+                                <div className="space-y-1.5">
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase px-1">API Secret</label>
+                                    <input type="password" value={formData.api_secret} onChange={e => setFormData({...formData, api_secret: e.target.value})}
+                                        placeholder="Enter your private secret" required
+                                        className="w-full bg-slate-800 border-white/5 rounded-xl px-4 py-3 text-slate-100 font-bold focus:ring-2 focus:ring-blue-500 outline-none" />
+                                </div>
+                                <label className="flex items-center gap-3 p-3 bg-slate-800/50 rounded-xl cursor-pointer group">
+                                    <input type="checkbox" checked={formData.is_live} onChange={e => setFormData({...formData, is_live: e.target.checked})}
+                                        className="w-5 h-5 rounded border-slate-700 bg-slate-900 text-orange-500 focus:ring-orange-500" />
+                                    <div className="flex flex-col">
+                                        <span className="text-sm font-bold text-slate-200 group-hover:text-white transition">Enable Live Trading</span>
+                                        <span className="text-[10px] text-orange-500 font-bold">WARNING: Real capital at risk</span>
+                                    </div>
+                                </label>
+                                <div className="flex gap-3 pt-4">
+                                    <button type="button" onClick={() => setShowConnect(false)} className="flex-1 py-3.5 text-slate-400 font-bold hover:text-white transition uppercase text-xs tracking-widest">Cancel</button>
+                                    <button type="submit" disabled={loading} className="flex-2 px-8 py-3.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl shadow-lg shadow-blue-600/20 font-black text-xs tracking-widest uppercase disabled:opacity-50">
+                                        {loading ? 'Authenticating...' : 'Connect Identity'}
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
 const HeatmapTab = ({ livePrices, priceHistory }) => {
     const [hoveredSym, setHoveredSym] = useState(null);
     const [filterSector, setFilterSector] = useState(null);
+    const [whaleMode, setWhaleMode] = useState(false);
+    
+    // Map whale status (this would come from real trade tape history)
+    const mockWhales = {"RELIANCE": true, "TCS": true, "HDFCBANK": true, "BTC_INR": true};
     
     // Realistic sector groupings with weighted flex
     const sectors = [
@@ -2182,6 +2610,13 @@ const HeatmapTab = ({ livePrices, priceHistory }) => {
                             {s.name}
                         </button>
                     ))}
+                    <button onClick={() => setWhaleMode(!whaleMode)}
+                        className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-bold border transition ${
+                            whaleMode ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.3)]' : 'border-slate-700 text-slate-500 hover:text-slate-300'
+                        }`}>
+                        <i data-lucide="waves" className="w-3.5 h-3.5"></i>
+                        <span>Whale Mode</span>
+                    </button>
                 </div>
             </div>
             
@@ -2215,7 +2650,9 @@ const HeatmapTab = ({ livePrices, priceHistory }) => {
                                     <div key={sym}
                                         onMouseEnter={() => setHoveredSym(sym)}
                                         onMouseLeave={() => setHoveredSym(null)}
-                                        className="flex flex-col items-center justify-center text-center cursor-default border-r border-black/20 last:border-0 relative transition-all overflow-hidden"
+                                        className={`flex flex-col items-center justify-center text-center cursor-default border-r border-black/20 last:border-0 relative transition-all overflow-hidden group ${
+                                            whaleMode && !mockWhales[sym] ? 'opacity-20 grayscale' : 'opacity-100 grayscale-0'
+                                        }`}
                                         style={{ 
                                             flexGrow: cap, 
                                             backgroundColor: bgColor,
