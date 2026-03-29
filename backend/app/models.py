@@ -1,31 +1,41 @@
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Enum, Boolean
 from sqlalchemy.orm import relationship
 import enum
+from cryptography.fernet import Fernet
+import os
 import datetime
 from app.db.session import Base
 
-class TransactionType(str, enum.Enum):
-    DEPOSIT = "DEPOSIT"
-    WITHDRAWAL = "WITHDRAWAL"
-    BUY = "BUY"
-    SELL = "SELL"
-
-class OrderType(str, enum.Enum):
-    MARKET = "MARKET"
-    LIMIT = "LIMIT"
-
-class OrderSide(str, enum.Enum):
-    BUY = "BUY"
-    SELL = "SELL"
+# For AES encryption of API keys
+ENCRYPTION_KEY = os.getenv("TRADING_APP_SECRET_KEY", Fernet.generate_key().decode())
+cipher_suite = Fernet(ENCRYPTION_KEY.encode())
 
 class OrderStatus(str, enum.Enum):
     PENDING = "PENDING"
     EXECUTED = "EXECUTED"
     CANCELLED = "CANCELLED"
+    REJECTED = "REJECTED"
+
+class OrderType(str, enum.Enum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+    BRACKET = "BRACKET"
+
+class OrderSide(str, enum.Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+class TransactionType(str, enum.Enum):
+    DEPOSIT = "DEPOSIT"
+    WITHDRAWAL = "WITHDRAWAL"
+    TRADE_BUY = "TRADE_BUY"
+    TRADE_SELL = "TRADE_SELL"
+    PNL = "PNL"
 
 class BotStatus(str, enum.Enum):
-    ACTIVE = "ACTIVE"
-    PAUSED = "PAUSED"
+    RUNNING = "RUNNING"
+    STOPPED = "STOPPED"
+    ERROR = "ERROR"
 
 class AlertDir(str, enum.Enum):
     ABOVE = "ABOVE"
@@ -35,92 +45,86 @@ class OptionType(str, enum.Enum):
     CALL = "CALL"
     PUT = "PUT"
 
-class PaymentStatus(str, enum.Enum):
-    PENDING = "PENDING"
-    SUCCESS = "SUCCESS"
-    FAILED = "FAILED"
-
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
+    email = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
+    full_name = Column(String)
+    is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    
+    is_2fa_enabled = Column(Boolean, default=False)
+    two_fa_secret = Column(String, nullable=True)
+
     wallet = relationship("Wallet", back_populates="user", uselist=False)
+    orders = relationship("Order", back_populates="user")
     portfolio = relationship("Portfolio", back_populates="user")
     transactions = relationship("Transaction", back_populates="user")
-    watchlist = relationship("Watchlist", back_populates="user")
-    orders = relationship("Order", back_populates="user")
     bots = relationship("TradingBot", back_populates="user")
     achievements = relationship("Achievement", back_populates="user")
     alerts = relationship("PriceAlert", back_populates="user")
     options = relationship("OptionContract", back_populates="user")
+    broker_accounts = relationship("BrokerAccount", back_populates="user")
 
 class Wallet(Base):
     __tablename__ = "wallets"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), unique=True)
-    balance = Column(Float, default=0.0)
-    upi_id = Column(String, nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    balance = Column(Float, default=100000.0) # Simulation balance
+    real_balance = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     user = relationship("User", back_populates="wallet")
-
-class Portfolio(Base):
-    __tablename__ = "portfolios"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    symbol = Column(String, index=True)
-    quantity = Column(Integer, default=0)
-    avg_price = Column(Float, default=0.0)
-    
-    user = relationship("User", back_populates="portfolio")
-    
-class Transaction(Base):
-    __tablename__ = "transactions"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    type = Column(Enum(TransactionType))
-    amount = Column(Float)
-    status = Column(Enum(PaymentStatus), default=PaymentStatus.SUCCESS)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
-    
-    user = relationship("User", back_populates="transactions")
-
-class Watchlist(Base):
-    __tablename__ = "watchlist"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    symbol = Column(String)
-    
-    user = relationship("User", back_populates="watchlist")
 
 class Order(Base):
     __tablename__ = "orders"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     symbol = Column(String, index=True)
-    order_type = Column(Enum(OrderType))
     side = Column(Enum(OrderSide))
+    type = Column(Enum(OrderType))
     quantity = Column(Integer)
-    price = Column(Float, nullable=True) # None for MARKET orders
-    stop_loss_price = Column(Float, nullable=True)
-    take_profit_price = Column(Float, nullable=True)
-    trailing_stop_active = Column(Boolean, default=False)
+    price = Column(Float)
     status = Column(Enum(OrderStatus), default=OrderStatus.PENDING)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
+    # Bracket orders
+    stop_loss_price = Column(Float, nullable=True)
+    take_profit_price = Column(Float, nullable=True)
+    parent_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
+
     user = relationship("User", back_populates="orders")
+
+class Portfolio(Base):
+    __tablename__ = "portfolios"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    symbol = Column(String, index=True)
+    quantity = Column(Integer)
+    average_price = Column(Float)
+    
+    user = relationship("User", back_populates="portfolio")
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    type = Column(Enum(TransactionType))
+    amount = Column(Float)
+    description = Column(String)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    
+    user = relationship("User", back_populates="transactions")
 
 class TradingBot(Base):
     __tablename__ = "trading_bots"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
-    symbol = Column(String, index=True)
-    amount_per_trade = Column(Float)
-    interval_seconds = Column(Integer)
-    status = Column(Enum(BotStatus), default=BotStatus.ACTIVE)
-    last_executed = Column(DateTime, nullable=True)
+    name = Column(String)
+    symbol = Column(String)
+    strategy = Column(String)
+    status = Column(Enum(BotStatus), default=BotStatus.RUNNING)
+    pnl = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     user = relationship("User", back_populates="bots")
@@ -129,8 +133,9 @@ class Achievement(Base):
     __tablename__ = "achievements"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
-    badge_name = Column(String)
+    title = Column(String)
     description = Column(String)
+    icon = Column(String)
     unlocked_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     user = relationship("User", back_populates="achievements")
@@ -208,3 +213,25 @@ class IpoBid(Base):
     quantity_bid = Column(Integer)
     allocated = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class BrokerAccount(Base):
+    __tablename__ = "broker_accounts"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    broker_name = Column(String) # e.g., 'Alpaca', 'Zerodha'
+    api_key = Column(String)
+    _api_secret_encrypted = Column("api_secret", String)
+    is_live = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    @property
+    def api_secret(self):
+        if not self._api_secret_encrypted: return None
+        return cipher_suite.decrypt(self._api_secret_encrypted.encode()).decode()
+
+    @api_secret.setter
+    def api_secret(self, value):
+        if value:
+            self._api_secret_encrypted = cipher_suite.encrypt(value.encode()).decode()
+
+    user = relationship("User", back_populates="broker_accounts")

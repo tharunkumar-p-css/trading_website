@@ -10,6 +10,7 @@ class UserCreate(BaseModel):
 class UserResponse(BaseModel):
     id: int
     email: EmailStr
+    two_factor_enabled: bool
     class Config:
         from_attributes = True
 
@@ -177,3 +178,24 @@ class IpoListingResponse(BaseModel):
     has_bid: Optional[bool] = False
     class Config:
         from_attributes = True
+class BrokerAccountCreate(BaseModel):
+    broker_name: str
+    api_key: str
+    api_secret: str
+    is_live: bool = False
+
+class BrokerAccountResponse(BaseModel):
+    id: int
+    broker_name: str
+    is_active: bool
+    is_live: bool
+    created_at: datetime
+    class Config:
+        from_attributes = True
+
+class TwoFactorSetup(BaseModel):
+    secret: str
+    otp_auth_url: str
+    
+class TwoFactorVerify(BaseModel):
+    code: str
