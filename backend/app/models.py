@@ -16,6 +16,11 @@ class OrderStatus(str, enum.Enum):
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
 
+class PaymentStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+
 class OrderType(str, enum.Enum):
     MARKET = "MARKET"
     LIMIT = "LIMIT"
@@ -55,6 +60,12 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     is_2fa_enabled = Column(Boolean, default=False)
     two_fa_secret = Column(String, nullable=True)
+    
+    # Sentinel Stats
+    xp = Column(Integer, default=0)
+    level = Column(Integer, default=1)
+    trading_style = Column(String, default="NOVICE") # E.g. "DIAMOND_HANDS", "SCALPER", "WHALE"
+    risk_score = Column(Float, default=0.5) # 0.0 to 1.0 (Conservative to Chaos)
 
     wallet = relationship("Wallet", back_populates="user", uselist=False)
     orders = relationship("Order", back_populates="user")
@@ -65,6 +76,7 @@ class User(Base):
     alerts = relationship("PriceAlert", back_populates="user")
     options = relationship("OptionContract", back_populates="user")
     broker_accounts = relationship("BrokerAccount", back_populates="user")
+    watchlist = relationship("Watchlist", back_populates="user")
 
 class Wallet(Base):
     __tablename__ = "wallets"
@@ -72,6 +84,7 @@ class Wallet(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     balance = Column(Float, default=100000.0) # Simulation balance
     real_balance = Column(Float, default=0.0)
+    upi_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     user = relationship("User", back_populates="wallet")
@@ -82,7 +95,7 @@ class Order(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     symbol = Column(String, index=True)
     side = Column(Enum(OrderSide))
-    type = Column(Enum(OrderType))
+    order_type = Column("type", Enum(OrderType))
     quantity = Column(Integer)
     price = Column(Float)
     status = Column(Enum(OrderStatus), default=OrderStatus.PENDING)
@@ -92,6 +105,7 @@ class Order(Base):
     stop_loss_price = Column(Float, nullable=True)
     take_profit_price = Column(Float, nullable=True)
     parent_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
+    trailing_stop_active = Column(Boolean, default=False)
 
     user = relationship("User", back_populates="orders")
 
@@ -101,7 +115,7 @@ class Portfolio(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     symbol = Column(String, index=True)
     quantity = Column(Integer)
-    average_price = Column(Float)
+    avg_price = Column("average_price", Float)
     
     user = relationship("User", back_populates="portfolio")
 
@@ -111,7 +125,8 @@ class Transaction(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     type = Column(Enum(TransactionType))
     amount = Column(Float)
-    description = Column(String)
+    status = Column(Enum(PaymentStatus), default=PaymentStatus.SUCCESS)
+    description = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     user = relationship("User", back_populates="transactions")
@@ -122,9 +137,14 @@ class TradingBot(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     name = Column(String)
     symbol = Column(String)
-    strategy = Column(String)
+    strategy = Column(String) # e.g. "DCA", "SMART_DCA"
+    amount_per_trade = Column(Float, default=100.0)
+    interval_seconds = Column(Integer, default=3600)
+    is_vol_aware = Column(Boolean, default=False)
+    rsi_min = Column(Float, nullable=True)
     status = Column(Enum(BotStatus), default=BotStatus.RUNNING)
     pnl = Column(Float, default=0.0)
+    last_executed = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     user = relationship("User", back_populates="bots")
@@ -133,7 +153,7 @@ class Achievement(Base):
     __tablename__ = "achievements"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
-    title = Column(String)
+    badge_name = Column(String)
     description = Column(String)
     icon = Column(String)
     unlocked_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -151,6 +171,14 @@ class PriceAlert(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     user = relationship("User", back_populates="alerts")
+
+class Watchlist(Base):
+    __tablename__ = "watchlists"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    symbol = Column(String, index=True)
+    
+    user = relationship("User", back_populates="watchlist")
 
 class OptionContract(Base):
     __tablename__ = "option_contracts"
@@ -221,6 +249,7 @@ class BrokerAccount(Base):
     broker_name = Column(String) # e.g., 'Alpaca', 'Zerodha'
     api_key = Column(String)
     _api_secret_encrypted = Column("api_secret", String)
+    is_active = Column(Boolean, default=True)
     is_live = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 

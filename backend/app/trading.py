@@ -82,6 +82,7 @@ async def process_copy_trades(source_order_id: int):
 async def execute_trade_background(order_id: int, user_email: str):
     import traceback
     try:
+        print(f"Order execution for {order_id} triggered...")
         async with AsyncSessionLocal() as db:
             order_res = await db.execute(select(Order).where(Order.id == order_id))
             order = order_res.scalars().first()
@@ -103,7 +104,7 @@ async def execute_trade_background(order_id: int, user_email: str):
                     if not check_ord or check_ord.status != OrderStatus.PENDING: return
                 await asyncio.sleep(1.0)
         else:
-            await asyncio.sleep(3) 
+            await asyncio.sleep(45.0) 
 
         async with AsyncSessionLocal() as db:
             order_res = await db.execute(select(Order).where(Order.id == order_id))
@@ -112,6 +113,11 @@ async def execute_trade_background(order_id: int, user_email: str):
             
             wallet_res = await db.execute(select(Wallet).where(Wallet.user_id == order.user_id))
             wallet = wallet_res.scalars().first()
+            if not wallet:
+                print(f"CRITICAL: Wallet not found for user {order.user_id}")
+                return
+            
+            print(f"Order {order_id} finishing sleep. Processing logic...")
             
             port_res = await db.execute(select(Portfolio).where(Portfolio.user_id == order.user_id).where(Portfolio.symbol == order.symbol))
             portfolio = port_res.scalars().first()
@@ -145,7 +151,7 @@ async def execute_trade_background(order_id: int, user_email: str):
             order.status = OrderStatus.EXECUTED
             transaction = Transaction(
                 user_id=order.user_id,
-                type=TransactionType.BUY if side_val == "BUY" else TransactionType.SELL,
+                type=TransactionType.TRADE_BUY if side_val == "BUY" else TransactionType.TRADE_SELL,
                 amount=total_cost
             )
             db.add(transaction)
@@ -283,6 +289,80 @@ async def analyze_stock(symbol: str, current_user: User = Depends(get_current_us
     await asyncio.sleep(1.5)
     return {"symbol": symbol, "analysis": random.choice(analysis_pool)}
 
+from pydantic import BaseModel
+class CommandRequest(BaseModel):
+    query: str
+
+@router.post("/command")
+async def process_ai_command(req: CommandRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Process Natural Language Commands for the Trading Terminal."""
+    query = req.query.lower()
+    resp = {"type": "info", "message": "Command recognized", "action": None}
+    
+    # 1. Simple Keyword Intent Parsing (Mocking a complex NLP model)
+    if "buy" in query or "purchase" in query:
+        # Extract symbol and qty (regex or simple split)
+        import re
+        match = re.search(r'(buy|purchase)\s+(\d+)\s+(shares? of\s+)?([a-z0-9_-]+)', query)
+        if match:
+            qty = int(match.group(2))
+            symbol = match.group(4).upper()
+            if symbol in stock_prices:
+                resp = {
+                    "type": "trade",
+                    "message": f"Establishing buy intent for {qty} shares of {symbol}. Please confirm in the order panel.",
+                    "action": "PREFILL_ORDER",
+                    "payload": {"symbol": symbol, "quantity": qty, "side": "BUY"}
+                }
+            else:
+                resp["message"] = f"Symbol {symbol} not found in live ticker."
+    
+    elif "sell" in query or "liquidate" in query:
+        match = re.search(r'(sell|liquidate)\s+(\d+)\s+(shares? of\s+)?([a-z0-9_-]+)', query)
+        if match:
+            qty = int(match.group(2))
+            symbol = match.group(4).upper()
+            resp = {
+                "type": "trade",
+                "message": f"Preparing sell order for {qty} shares of {symbol}.",
+                "action": "PREFILL_ORDER",
+                "payload": {"symbol": symbol, "quantity": qty, "side": "SELL"}
+            }
+
+    elif "chart" in query or "show" in query or "graph" in query:
+        # e.g. "show me the chart for BTC_INR"
+        words = query.split()
+        symbol = next((w.upper() for w in words if w.upper() in stock_prices), None)
+        if symbol:
+            resp = {
+                "type": "nav",
+                "message": f"Switching terminal focus to {symbol} real-time data.",
+                "action": "SWITCH_CHART",
+                "payload": {"symbol": symbol}
+            }
+        else:
+            resp["message"] = "Specify a valid ticker symbol to update the view."
+
+    elif "pnl" in query or "portfolio" in query or "profit" in query:
+        resp = {
+            "type": "nav",
+            "message": "Opening your global performance dashboard.",
+            "action": "SWITCH_TAB",
+            "payload": {"tab": "portfolio"}
+        }
+
+    elif "bias" in query or "psychology" in query or "mental" in query:
+        resp = {
+            "type": "info",
+            "message": "Scanning behavioral patterns... Bias Shield confirms your current execution risk is STABLE.",
+            "action": "BLINK_BIAS_SHIELD"
+        }
+
+    else:
+        resp["message"] = "AI Copilot: Command understood, but logic for this feature is being provisioned. try 'Buy 10 AAPL' or 'Show portfolio'."
+
+    return resp
+
 from app.models import Watchlist
 from app.schemas import WatchlistResponse, WatchlistCreate
 
@@ -326,16 +406,20 @@ async def get_bots(current_user: User = Depends(get_current_user), db: AsyncSess
 
 @router.post("/bots", response_model=TradingBotResponse)
 async def create_bot(bot_req: TradingBotCreate, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    if bot_req.symbol not in stock_prices:
+    if bot_req.symbol.upper() not in stock_prices:
         raise HTTPException(status_code=400, detail="Invalid target symbol")
-    if bot_req.amount_per_trade < 10 or bot_req.interval_seconds < 5:
-        raise HTTPException(status_code=400, detail="Minimum ₹10 per trade and 5 second intervals")
+    if bot_req.amount_per_trade < 10 or bot_req.interval_seconds < 1:
+        raise HTTPException(status_code=400, detail="Minimum ₹10 per trade")
         
     bot = TradingBot(
         user_id=current_user.id,
-        symbol=bot_req.symbol,
+        name=bot_req.name,
+        symbol=bot_req.symbol.upper(),
         amount_per_trade=bot_req.amount_per_trade,
-        interval_seconds=bot_req.interval_seconds
+        interval_seconds=bot_req.interval_seconds,
+        is_vol_aware=bot_req.is_vol_aware,
+        rsi_min=bot_req.rsi_min,
+        strategy="SMART_DCA" if (bot_req.is_vol_aware or bot_req.rsi_min) else "DCA"
     )
     db.add(bot)
     await db.commit()
@@ -355,10 +439,11 @@ async def delete_bot(bot_id: int, current_user: User = Depends(get_current_user)
 async def bot_runner_loop():
     import traceback
     from datetime import datetime
+    from app.websockets import candle_store
     while True:
         try:
             async with AsyncSessionLocal() as db:
-                bots_res = await db.execute(select(TradingBot).where(TradingBot.status == BotStatus.ACTIVE))
+                bots_res = await db.execute(select(TradingBot).where(TradingBot.status == BotStatus.RUNNING))
                 active_bots = bots_res.scalars().all()
                 now = datetime.utcnow()
                 
@@ -368,13 +453,29 @@ async def bot_runner_loop():
                         current_price = stock_prices.get(symbol)
                         if not current_price: continue
                         
+                        # --- SMART SENTINEL LOGIC ---
+                        if bot.rsi_min:
+                            tf = "1m"
+                            candles = list(candle_store.get(symbol, {}).get(tf, []))
+                            if len(candles) > 14:
+                                rsi = _calculate_rsi_live(candles)
+                                if rsi < bot.rsi_min: # Only buy if price is "low" enough
+                                    continue # Skip this interval if RSI is too high
+                                    
+                        if bot.is_vol_aware:
+                            tf = "1m"
+                            candles = list(candle_store.get(symbol, {}).get(tf, []))
+                            if len(candles) > 10:
+                                vol = _calculate_vol_live(candles)
+                                if vol > 0.05: # Flash crash / High vol detection
+                                    continue # Flight to safety - pause DCA during chaos
+                        
                         qty = max(1, int(bot.amount_per_trade // current_price))
                         total_cost = qty * current_price
                         
                         wallet_res = await db.execute(select(Wallet).where(Wallet.user_id == bot.user_id))
                         wallet = wallet_res.scalars().first()
-                        if not wallet or wallet.balance < total_cost:
-                            continue
+                        if not wallet or wallet.balance < total_cost: continue
                             
                         wallet.balance -= total_cost
                         port_res = await db.execute(select(Portfolio).where(Portfolio.user_id == bot.user_id).where(Portfolio.symbol == symbol))
@@ -387,38 +488,44 @@ async def bot_runner_loop():
                             portfolio = Portfolio(user_id=bot.user_id, symbol=symbol, quantity=qty, avg_price=current_price)
                             db.add(portfolio)
                             
-                        # create order record
-                        order = Order(
-                            user_id=bot.user_id,
-                            symbol=symbol,
-                            order_type=OrderType.MARKET,
-                            side=OrderSide.BUY,
-                            quantity=qty,
-                            price=current_price,
-                            status=OrderStatus.EXECUTED
-                        )
+                        order = Order(user_id=bot.user_id, symbol=symbol, order_type=OrderType.MARKET, side=OrderSide.BUY, quantity=qty, price=current_price, status=OrderStatus.EXECUTED)
                         db.add(order)
                         
                         bot.last_executed = now
                         await db.commit()
                         
-                        user_res = await db.execute(select(User).where(User.id == bot.user_id))
-                        usr = user_res.scalars().first()
+                        usr = (await db.execute(select(User).where(User.id == bot.user_id))).scalars().first()
                         if usr:
                             await manager.send_personal_message({
                                 "type": "bot_trade_executed",
-                                "data": {
-                                    "symbol": symbol,
-                                    "quantity": qty,
-                                    "price": current_price,
-                                    "cost": total_cost,
-                                    "wallet_balance": wallet.balance
-                                }
+                                "data": { "name": bot.name, "symbol": symbol, "quantity": qty, "price": current_price, "wallet_balance": wallet.balance }
                             }, usr.email)
         except Exception as e:
             print("BOT RUNNER EXCEPTION:", e)
             traceback.print_exc()
-        await asyncio.sleep(5)
+        await asyncio.sleep(2)
+
+def _calculate_rsi_live(candles, period=14):
+    closes = [c['close'] for c in candles[-period-1:]]
+    gains = []
+    losses = []
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i-1]
+        if diff > 0: gains.append(diff); losses.append(0)
+        else: gains.append(0); losses.append(abs(diff))
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0: return 100
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def _calculate_vol_live(candles, period=10):
+    prices = [c['close'] for c in candles[-period:]]
+    if len(prices) < 2: return 0
+    import statistics
+    mean = sum(prices) / len(prices)
+    std_dev = statistics.stdev(prices)
+    return std_dev / mean
 
 @router.get("/achievements", response_model=List[AchievementResponse])
 async def get_achievements(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
@@ -524,7 +631,7 @@ async def create_option(opt_req: OptionCreate, current_user: User = Depends(get_
     )
     db.add(opt)
     
-    transaction = Transaction(user_id=current_user.id, type=TransactionType.BUY, amount=premium)
+    transaction = Transaction(user_id=current_user.id, type=TransactionType.TRADE_BUY, amount=premium)
     db.add(transaction)
     
     await db.commit()
@@ -556,7 +663,7 @@ async def options_watcher_loop():
                         wallet = wallet_res.scalars().first()
                         if wallet:
                             wallet.balance += payout
-                        transaction = Transaction(user_id=opt.user_id, type=TransactionType.SELL, amount=payout)
+                        transaction = Transaction(user_id=opt.user_id, type=TransactionType.TRADE_SELL, amount=payout)
                         db.add(transaction)
                         notif_msg = f"{opt.option_type.value} Contract ITM! Payout ₹{payout:.2f} credited. (Strike {opt.strike_price}, Close {current_price:.2f})"
                         
@@ -918,19 +1025,15 @@ def black_scholes_greeks(S, K, T, r, sigma, option_type="call"):
 
 @router.get("/options/chain/{symbol}")
 async def get_options_chain(symbol: str, current_user: User = Depends(get_current_user)):
-    S = stock_prices.get(symbol)
+    S = stock_prices.get(symbol.upper())
     if not S:
         raise HTTPException(404, f"Symbol {symbol} not found")
     r = 0.07       # risk-free rate (RBI repo ~7%)
     T = 30 / 365   # 30-day expiry
     sigma = 0.25   # base IV ~25%
-    # Adjust vol for crypto and high-beta stocks
-    if "_INR" in symbol:
-        sigma = 0.80
-    elif symbol in ("NIFTY_50", "SENSEX", "BANKNIFTY"):
-        sigma = 0.15
+    if "_INR" in symbol.upper(): sigma = 0.80
+    elif symbol.upper() in ("NIFTY_50", "SENSEX", "BANKNIFTY"): sigma = 0.15
 
-    # Build ATM ± 10 strikes at ~0.5% intervals
     step = round(S * 0.005, 0) or 1
     atm  = round(S / step) * step
     strikes = [round(atm + step * i, 2) for i in range(-10, 11)]
@@ -941,12 +1044,51 @@ async def get_options_chain(symbol: str, current_user: User = Depends(get_curren
         put  = black_scholes_greeks(S, K, T, r, sigma, "put")
         moneyness = "ATM" if K == atm else ("ITM" if K < atm else "OTM")
         chain.append({
-            "strike": K,
-            "moneyness": moneyness,
-            "call": call,
-            "put":  put,
+            "strike": K, "moneyness": moneyness, "call": call, "put": put,
         })
-    return {"symbol": symbol, "spot": S, "expiry_days": 30, "chain": chain}
+    return {"symbol": symbol.upper(), "spot": S, "expiry_days": 30, "chain": chain}
+
+@router.post("/options/buy")
+async def buy_option(req: OptionCreate, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    symbol_up = req.symbol.upper()
+    S = stock_prices.get(symbol_up)
+    if not S: raise HTTPException(404, f"Underlying symbol {symbol_up} not found")
+    
+    r, T, sigma = 0.07, req.expires_in_minutes/(60*24*365), 0.25
+    if "_INR" in symbol_up: sigma = 0.80
+    elif symbol_up in ("NIFTY_50", "SENSEX", "BANKNIFTY"): sigma = 0.15
+    
+    greeks = black_scholes_greeks(S, req.strike_price, T, r, sigma, req.option_type.lower())
+    total_premium = greeks["price"] * req.quantity
+    
+    w_res = await db.execute(select(Wallet).where(Wallet.user_id == current_user.id))
+    wallet = w_res.scalars().first()
+    if not wallet or wallet.balance < total_premium:
+        raise HTTPException(400, f"Insufficient funds. Premium required: ₹{total_premium:.2f}")
+    
+    wallet.balance -= total_premium
+    contract = OptionContract(
+        user_id=current_user.id,
+        symbol=req.symbol,
+        strike_price=req.strike_price,
+        premium_paid=total_premium,
+        quantity=req.quantity,
+        option_type=OptionType.CALL if req.option_type.upper() == "CALL" else OptionType.PUT,
+        expires_at=datetime.datetime.utcnow() + datetime.timedelta(minutes=req.expires_in_minutes)
+    )
+    db.add(contract)
+    
+    # Audit transaction
+    audit = Transaction(user_id=current_user.id, type=TransactionType.TRADE_BUY, amount=total_premium)
+    db.add(audit)
+    
+    await db.commit()
+    await manager.send_personal_message({
+        "type": "options_settled", 
+        "message": f"Successfully purchased {req.quantity} {req.option_type} @ ₹{req.strike_price} for {req.symbol}. Total Premium: ₹{total_premium:.2f}"
+    }, current_user.email)
+    
+    return {"status": "success", "premium": total_premium}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1230,7 +1372,7 @@ async def connect_broker(account: BrokerAccountCreate, current_user: User = Depe
 async def verify_2fa(code: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     # Mock validation - in real app use pyotp.TOTP(current_user.two_factor_secret).verify(code)
     if code == "123456":
-        current_user.two_factor_enabled = True
+        current_user.is_2fa_enabled = True
         await db.commit()
         return {"status": "success", "message": "2FA verified and enabled"}
     raise HTTPException(400, "Invalid 2FA code")
@@ -1264,11 +1406,6 @@ async def pnl_watcher_loop():
     while True:
         try:
             async with AsyncSessionLocal() as db:
-                # Update PnL for all portfolios
-                for symbol, price in stock_prices.items():
-                    res = await db.execute(update(Portfolio).where(Portfolio.symbol == symbol).values())
-                    # This needs a more nuanced approach for multi-user, but we loop over portfolios
-                
                 # Broadly calculate PnL per user and broadcast
                 res = await db.execute(select(User))
                 users = res.scalars().all()
@@ -1278,14 +1415,14 @@ async def pnl_watcher_loop():
                     
                     total_unrealized_pnl = 0.0
                     for pos in positions:
-                        curr_price = stock_prices.get(pos.symbol, pos.average_price)
-                        pos_pnl = (curr_price - pos.average_price) * pos.quantity
+                        curr_price = stock_prices.get(pos.symbol, pos.avg_price)
+                        pos_pnl = (curr_price - pos.avg_price) * pos.quantity
                         total_unrealized_pnl += pos_pnl
                     
                     await manager.send_personal_message({
                         "type": "pnl_update",
                         "unrealized_pnl": round(total_unrealized_pnl, 2),
-                        "positions": [{ "symbol": p.symbol, "qty": p.quantity, "pnl": round((stock_prices.get(p.symbol, p.average_price) - p.average_price) * p.quantity, 2) } for p in positions]
+                        "positions": [{ "symbol": p.symbol, "qty": p.quantity, "pnl": round((stock_prices.get(p.symbol, p.avg_price) - p.avg_price) * p.quantity, 2) } for p in positions]
                     }, user.email)
                     
         except Exception as e:

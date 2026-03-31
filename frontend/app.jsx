@@ -20,7 +20,7 @@ const ProChart = ({ data, symbol, compact = false, brackets = null, patterns = [
 
     const [chartType, setChartType] = useState('candlestick');
     const [activeTool, setActiveTool] = useState('crosshair');
-    const [activeIndicators, setActiveIndicators] = useState({ sma14: false, sma50: false, ema21: false, bb: false });
+    const [activeIndicators, setActiveIndicators] = useState({ sma14: false, sma50: false, ema21: false, bb: false, sao: false, zones: false });
     const [showVolume, setShowVolume] = useState(true);
     const [showRsi, setShowRsi] = useState(false);
     const [drawings, setDrawings] = useState([]);
@@ -101,10 +101,24 @@ const ProChart = ({ data, symbol, compact = false, brackets = null, patterns = [
             return data.map((d, i) => { if (i === 0) { ema = d.close; } else { ema = d.close * k + ema * (1 - k); } return { time: d.time, value: ema }; });
         };
 
+        const getSAO = () => {
+            const period = 14;
+            return data.slice(period).map((d, i) => {
+                const slice = data.slice(i, i + period);
+                const avgPrice = slice.reduce((s, x) => s + x.close, 0) / period;
+                const vol = Math.sqrt(slice.reduce((s, x) => s + Math.pow(x.close - avgPrice, 2), 0) / period);
+                const momentum = (d.close - slice[0].open) / slice[0].open;
+                // SAO = Momentum weighted by Volatility + a scaled baseline
+                const val = (momentum * (1 + vol / avgPrice) * 1000) + avgPrice;
+                return { time: d.time, value: val };
+            });
+        };
+
         const indicatorConfig = {
             sma14: { factory: () => chart.addLineSeries({ color: '#facc15', lineWidth: 1, title: 'SMA14', crosshairMarkerVisible: false }), data: () => getSMA(14) },
             sma50: { factory: () => chart.addLineSeries({ color: '#a855f7', lineWidth: 1, title: 'SMA50', crosshairMarkerVisible: false }), data: () => getSMA(50) },
             ema21: { factory: () => chart.addLineSeries({ color: '#06b6d4', lineWidth: 1, title: 'EMA21', crosshairMarkerVisible: false }), data: () => getEMA(21) },
+            sao: { factory: () => chart.addLineSeries({ color: '#fb7185', lineWidth: 2, title: 'SAO ALPHA', crosshairMarkerVisible: true, lineStyle: 2 }), data: () => getSAO() },
         };
 
         Object.entries(activeIndicators).forEach(([key, isOn]) => {
@@ -231,6 +245,40 @@ const ProChart = ({ data, symbol, compact = false, brackets = null, patterns = [
 
         allDrawings.forEach(d => drawShape(d, ctx));
 
+        // Draw Supply/Demand Zones (Sentinel Proprietary logic)
+        if (activeIndicators.zones) {
+            const detectZones = () => {
+                if (data.length < 20) return [];
+                const zones = [];
+                // Find consolidations: chunks where max(high)-min(low) is small over 5+ candles
+                for (let i = 0; i < data.length - 10; i += 5) {
+                    const slice = data.slice(i, i + 8);
+                    const high = Math.max(...slice.map(d => d.high));
+                    const low = Math.min(...slice.map(d => d.low));
+                    const volSum = slice.reduce((s, d) => s + (d.volume || 0), 0);
+                    if (high - low < (high * 0.005)) { // 0.5% range
+                        zones.push({ high, low, color: volSum > 2000 ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)' });
+                    }
+                }
+                return zones;
+            };
+
+            const zones = detectZones();
+            const prices = data.map(d => d.close);
+            const minP = Math.min(...prices) * 0.998;
+            const maxP = Math.max(...prices) * 1.002;
+            const range = maxP - minP || 1;
+
+            zones.forEach(z => {
+                const y1 = canvas.height - ((z.high - minP) / range) * canvas.height;
+                const y2 = canvas.height - ((z.low - minP) / range) * canvas.height;
+                ctx.fillStyle = z.color;
+                ctx.fillRect(0, y1, canvas.width, y2 - y1);
+                ctx.strokeStyle = z.color.replace('0.1', '0.4');
+                ctx.strokeRect(0, y1, canvas.width, y2 - y1);
+            });
+        }
+
         // Draw Pattern Discovery Overlays (Refined)
         if (patterns && patterns.length > 0) {
             patterns.forEach(p => {
@@ -353,7 +401,9 @@ const ProChart = ({ data, symbol, compact = false, brackets = null, patterns = [
         { id: 'sma14', label: 'SMA 14', color: '#facc15' },
         { id: 'sma50', label: 'SMA 50', color: '#a855f7' },
         { id: 'ema21', label: 'EMA 21', color: '#06b6d4' },
-        { id: 'bb', label: 'Bollinger', color: '#94a3b8' },
+        { id: 'bb', label: 'BB-Volatility', color: '#94a3b8' },
+        { id: 'sao', label: 'Sentinel Alpha', color: '#fb7185' },
+        { id: 'zones', label: 'Supply/Demand', color: '#818cf8' },
     ];
 
     const toolCursor = activeTool === 'crosshair' ? 'crosshair' : activeTool === 'eraser' ? 'cell' : 'crosshair';
@@ -486,8 +536,8 @@ const OrderBook = ({ symbol, livePrice }) => {
 };
 
 // API Helper
-const MUTUAL_FUNDS = ["PARAGPARIKH", "QUANTUM", "SBISMALL", "MIRAEASSET", "HDFCMIDCAP", "NIPPONIND", "AXISBLUECHIP", "SBIBLUECHIP", "ICICIPRU", "MOTILALOSWAL", "KOTAKSMALL", "UTINIFTY", "DSPMIDCAP", "FRANKLININD", "TATAELSS", "ABSLFRONTLINE", "PGIMINDIA", "CANARAROB", "SUNDARAM", "EDELWEISS", "INVESCO", "BANDHAN", "SAMCO", "QUANT", "NAVISMALL", "HSBC", "BARODA", "MAHINDRA", "UNION", "TAURUS", "NJ", "WHITEFR", "BANKOFI", "ITI", "SHRIRAM"];
-const CRYPTO_ASSETS = ["BTC_INR", "ETH_INR", "SOL_INR", "DOGE_INR", "PEPE_INR", "ADA_INR", "DOT_INR", "XRP_INR", "LINK_INR", "MATIC_INR", "SHIB_INR", "AVAX_INR", "UNI_INR", "LTC_INR", "BCH_INR", "ATOM_INR", "ALGO_INR", "XLM_INR", "VET_INR", "ICP_INR", "FIL_INR", "THETA_INR", "AAVE_INR", "EOS_INR", "XTZ_INR", "MKR_INR", "AXS_INR", "SAND_INR", "MANA_INR", "GALA_INR", "ENJ_INR", "CHZ_INR", "QNT_INR", "NEAR_INR", "FTM_INR", "GRT_INR"];
+const MUTUAL_FUNDS = ["PARAGPARIKH", "QUANTUM", "SBISMALL", "MIRAEASSET", "HDFCMIDCAP", "NIPPONIND", "AXISBLUECHIP", "SBIBLUECHIP", "ICICIPRU", "MOTILALOSWAL", "KOTAKSMALL", "UTINIFTY", "DSPMIDCAP", "FRANKLININD", "TATAELSS", "ABSLFRONTLINE", "PGIMINDIA", "CANARAROB", "SUNDARAM", "EDELWEISS", "INVESCO", "BANDHAN", "SAMCO", "QUANT", "NAVISMALL", "HSBC", "BARODA", "MAHINDRA", "UNION", "TAURUS", "NJ", "WHITEFR", "BANKOFI", "ITI", "SHRIRAM", "GROWW", "ZERODHA", "HELIOS", "TRUST", "OLD-BRIDGE", "PPFAS", "NAVI-F", "KOTAK-G", "SBI-G", "ICICI-G", "HDFC-G", "AXIS-G", "NIPPON-G", "UT-G", "DSP-G", "FRANK-G", "TATA-G", "ABSL-G", "PGIM-G", "CANARA-G", "SUN-G", "EDEL-G", "INV-G", "BAND-G", "SAM-G", "QUA-G", "HSBC-G", "BAR-G", "MAH-G", "UNI-G", "TAU-G", "REL-G", "L&T-G", "IDFC-G", "DHFL-G", "INDI-G", "JM-G", "SR-G", "BOI-G", "ESSEL-G", "MIR-G", "MOT-G", "PAR-G", "QUA-S", "SB-S"];
+const CRYPTO_ASSETS = ["BTC_INR", "ETH_INR", "SOL_INR", "DOGE_INR", "PEPE_INR", "ADA_INR", "DOT_INR", "XRP_INR", "LINK_INR", "MATIC_INR", "SHIB_INR", "AVAX_INR", "UNI_INR", "LTC_INR", "BCH_INR", "ATOM_INR", "ALGO_INR", "XLM_INR", "VET_INR", "ICP_INR", "FIL_INR", "THETA_INR", "AAVE_INR", "EOS_INR", "XTZ_INR", "MKR_INR", "AXS_INR", "SAND_INR", "MANA_INR", "GALA_INR", "NEAR_INR", "FTM_INR", "GRT_INR", "LDO_INR", "APT_INR", "OP_INR", "ARB_INR", "RNDR_INR", "INJ_INR", "STX_INR", "IMX_INR", "TIA_INR", "SEI_INR", "SUI_INR", "KAS_INR", "ORDI_INR", "BEAM_INR", "FET_INR", "AGIX_INR", "OCEAN_INR", "FLOKI_INR", "BONK_INR", "WIF_INR", "BOME_INR", "MEW_INR", "TURBO_INR", "MOG_INR", "BRETT_INR", "SLERF_INR", "BOOK_INR", "POPCAT_INR", "MICHI_INR", "GUMMY_INR", "MANEKI_INR", "NOT_INR", "TON_INR", "TRX_INR", "HBAR_INR", "AKT_INR", "RENDER_INR", "JUP_INR", "PYTH_INR", "RAY_INR", "HNT_INR", "MOBILE_INR", "HONEY_INR", "JTO_INR", "BONK2_INR", "PEPE2_INR", "DOGE2_INR"];
 const API_BASE = "";
 const apiFetch = async (endpoint, method = "GET", body = null, token = null) => {
     const headers = { "Content-Type": "application/json" };
@@ -607,6 +657,139 @@ const AuthScreen = () => {
     );
 };
 
+const SentinelInsightSidebar = ({ isOpen, onClose, biasData, whaleAlerts, news }) => {
+    if (!isOpen) return null;
+    return (
+        <aside className="w-80 border-l border-slate-800 bg-slate-950 flex flex-col shrink-0 animate-in slide-in-from-right-4 duration-300 z-40 relative">
+            <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+                <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-primary animate-pulse"></div>
+                    <h3 className="font-black text-xs tracking-widest text-slate-300 uppercase italic">SENTINEL-AI Insight</h3>
+                </div>
+                <button onClick={onClose} className="text-slate-500 hover:text-white transition">
+                    <i data-lucide="x" className="w-4 h-4"></i>
+                </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+                {/* Bias Shield Gauge */}
+                <div className="p-5 border-b border-white/5 bg-gradient-to-br from-slate-950 to-slate-900">
+                    <div className="flex justify-between items-center mb-4">
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Behavioral Bias Shield</span>
+                        <div className={`p-1 rounded bg-black/40 border ${biasData.tilt_detected ? 'border-danger/30 text-danger' : 'border-success/30 text-success'}`}>
+                             <i data-lucide={biasData.tilt_detected ? "flame" : "shield-check"} className="w-3.5 h-3.5"></i>
+                        </div>
+                    </div>
+                    
+                    <div className="relative h-2 w-full bg-slate-800 rounded-full overflow-hidden mb-3">
+                        <div 
+                            className={`h-full transition-all duration-1000 ${biasData.score > 0.7 ? 'bg-success' : biasData.score > 0.4 ? 'bg-yellow-500' : 'bg-danger'}`}
+                            style={{ width: `${(biasData.score || 0) * 100}%`, boxShadow: '0 0 10px currentColor' }}
+                        ></div>
+                    </div>
+
+                    <div className="flex justify-between items-end">
+                        <div>
+                            <div className="text-xs font-black text-white italic uppercase tracking-tighter">Status: {biasData.recommendation}</div>
+                            <div className="text-[9px] text-slate-500 font-medium">Internal Tilt Score: {biasData.score.toFixed(2)}</div>
+                        </div>
+                        <div className="text-right">
+                             <div className="text-[8px] text-slate-500 uppercase font-black">Stability</div>
+                             <div className="text-xl font-black text-slate-100 tabular-nums">{(biasData.score * 100).toFixed(0)}<span className="text-[10px] text-slate-600">%</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Whale Alerts Section */}
+                <div className="p-4 border-b border-white/5">
+                    <div className="flex items-center gap-2 mb-4">
+                        <i data-lucide="waves" className="w-3 h-3 text-cyan-400"></i>
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Institutional Whales</span>
+                    </div>
+                    <div className="space-y-3">
+                        {whaleAlerts.length === 0 ? (
+                            <div className="text-[10px] text-slate-600 italic py-4 text-center">Scanning depth for block trades...</div>
+                        ) : (
+                            whaleAlerts.slice().reverse().map((w, idx) => (
+                                <div key={idx} className="bg-slate-900/40 border border-white/5 p-3 rounded-xl animate-in fade-in slide-in-from-right-2">
+                                    <div className="flex justify-between items-start mb-1">
+                                        <span className="text-xs font-black text-slate-200">{w.symbol}</span>
+                                        <span className={`text-[9px] font-black italic px-1 rounded ${w.side === 'BUY' ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger'}`}>{w.side} BLOCK</span>
+                                    </div>
+                                    <div className="flex justify-between items-end">
+                                        <div className="text-[10px] text-slate-400 font-mono italic">₹{(w.value / 100000).toFixed(1)}L Entry</div>
+                                        <div className="text-[8px] text-slate-600 uppercase font-bold">{new Date(w.timestamp * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'})}</div>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
+
+                {/* Tactical Wire Feed */}
+                <div className="p-4">
+                    <div className="flex items-center gap-2 mb-4">
+                        <i data-lucide="radio" className="w-3 h-3 text-primary animate-pulse"></i>
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Tactical Wire Feed</span>
+                    </div>
+                    <div className="space-y-4">
+                        {news.slice(0, 8).map(item => (
+                            <div key={item.id} className="relative pl-3 border-l-2 border-slate-800 hover:border-primary/50 transition-colors py-1">
+                                <div className="text-[10px] text-slate-500 font-black flex items-center gap-2 mb-1">
+                                    {item.source} 
+                                    <span className="w-1 h-1 rounded-full bg-slate-700"></span>
+                                    <span className={item.sentiment === 'BULLISH' ? 'text-success' : item.sentiment === 'BEARISH' ? 'text-danger' : 'text-slate-400'}>{item.sentiment}</span>
+                                </div>
+                                <div className="text-xs text-slate-300 font-medium leading-relaxed">{item.headline}</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        </aside>
+    );
+};
+
+const NewsTicker = ({ news }) => {
+    if(!news || news.length === 0) return (
+         <div className="bg-slate-950 border-b border-white/5 h-8 flex items-center px-4 overflow-hidden shrink-0">
+             <div className="flex gap-4 items-center">
+                 <div className="w-2 h-2 rounded-full bg-slate-700 animate-pulse"></div>
+                 <span className="text-[10px] text-slate-500 font-bold tracking-widest uppercase italic">Sentinel AI-Broadband: Synchronizing Real-Time Institutional News Wire...</span>
+             </div>
+         </div>
+    );
+    return (
+        <div className="bg-slate-950 border-b border-white/5 py-1 px-4 overflow-hidden relative h-8 flex items-center shrink-0 group">
+            <div className="flex gap-16 whitespace-nowrap animate-marquee">
+                {[...news, ...news].map((item, idx) => (
+                    <div key={`${item.id}-${idx}`} className="flex items-center gap-3 text-[10px] md:text-[11px]">
+                        <span className="text-primary font-black opacity-80 letter-spacing-1">[{item.source}]</span>
+                        <span className="text-slate-200 font-medium">{item.headline}</span>
+                        <div className={`w-1.5 h-1.5 rounded-full ${item.sentiment === 'BULLISH' ? 'bg-success shadow-[0_0_8px_rgba(34,197,94,0.6)]' : item.sentiment === 'BEARISH' ? 'bg-danger shadow-[0_0_8px_rgba(239,68,68,0.6)]' : 'bg-slate-500'}`}></div>
+                        <span className={`font-black tracking-tighter ${item.sentiment === 'BULLISH' ? 'text-success' : item.sentiment === 'BEARISH' ? 'text-danger' : 'text-slate-400'}`}>
+                            {item.sentiment} {item.score > 0 ? '+' : ''}{(item.score * 100).toFixed(0)}%
+                        </span>
+                    </div>
+                ))}
+            </div>
+            <style>{`
+                @keyframes marquee {
+                    0% { transform: translateX(0); }
+                    100% { transform: translateX(-50%); }
+                }
+                .animate-marquee {
+                    display: inline-flex;
+                    animation: marquee 60s linear infinite;
+                }
+                .group:hover .animate-marquee {
+                    animation-play-state: paused;
+                }
+            `}</style>
+        </div>
+    );
+};
+
 // --- Main Application ---
 const Dashboard = () => {
     const { user, token, logout } = useContext(AuthContext);
@@ -632,7 +815,11 @@ const Dashboard = () => {
     const [activeTab, setActiveTab] = useState('market');
     const [notifications, setNotifications] = useState([]);
     const [tradeTape, setTradeTape] = useState([]);
+    const [whaleAlerts, setWhaleAlerts] = useState([]);
+    const [aiNews, setAiNews] = useState([]);
     const [showTape, setShowTape] = useState(false);
+    const [showSentinel, setShowSentinel] = useState(false);
+    const [biasData, setBiasData] = useState({ score: 0.8, recommendation: 'FOCUSED', tilt_detected: false });
     const ws = useRef(null);
 
     // Sonic Trading Initialization
@@ -668,6 +855,21 @@ const Dashboard = () => {
             if(s) setLivePrices(s);
         } catch (e) { console.error(e); }
     };
+
+    const fetchBias = async () => {
+        try {
+            const data = await apiFetch("/trade/psychology/bias", "GET", null, token);
+            if (data) setBiasData(data);
+        } catch(e) {}
+    };
+
+    useEffect(() => {
+        if (user) {
+            fetchBias();
+            const inv = setInterval(fetchBias, 15000);
+            return () => clearInterval(inv);
+        }
+    }, [user, activeTab]);
 
     useEffect(() => {
         loadData();
@@ -709,7 +911,9 @@ const Dashboard = () => {
                     return newHist;
                 });
             } else if (msg.type === "news_update") {
-                setNewsFeed(prev => [msg.data, ...prev].slice(0, 10)); // Keep last 10
+                setAiNews(prev => [msg.data, ...prev].slice(0, 20));
+            } else if (msg.type === "ai_news_flash") {
+                setAiNews(prev => [msg.data, ...prev].slice(0, 20));
             } else if (msg.type === "trade_tape_batch") {
                 if (msg.data) setTradeTape(prev => [...msg.data, ...prev].slice(0, 200));
             } else if (msg.type === "sentiment_post") {
@@ -744,6 +948,9 @@ const Dashboard = () => {
             } else if (msg.type === "trade_signal") {
                 const dir = msg.data.direction === "Bullish" ? "🟢" : "🔴";
                 addNotification(`🧠 AI SIGNAL: ${dir} ${msg.data.symbol} - ${msg.data.pattern} (${msg.data.confidence}% conf)`);
+            } else if (msg.type === "whale_alert") {
+                setWhaleAlerts(prev => [...prev, msg.data].slice(-10));
+                if (window.playSonicCue) window.playSonicCue(150);
             }
         };
         return () => ws.current.close();
@@ -785,6 +992,30 @@ const Dashboard = () => {
         setTimeout(() => {
             setNotifications(prev => prev.filter(n => n.id !== id));
         }, 6000);
+    };
+
+    const handleCommandAction = (action, payload) => {
+        if (!action) return;
+        
+        switch(action) {
+            case 'SWITCH_TAB':
+                setActiveTab(payload.tab);
+                addNotification(`🚀 Copilot: Navigated to ${payload.tab.replace('_', ' ')}`);
+                break;
+            case 'PREFILL_ORDER':
+                addNotification(`🤖 Copilot: Pre-filled ${payload.side} order for ${payload.quantity} ${payload.symbol}`);
+                // In a real app, this could open the trade modal or set state
+                break;
+            case 'SWITCH_CHART':
+                addNotification(`📊 Copilot: Switching focus to ${payload.symbol}`);
+                // Potentially update a 'selectedSymbol' state if shared
+                break;
+            case 'BLINK_BIAS_SHIELD':
+                addNotification(`🦾 Copilot: Behavioral Bias Scan Complete - Status GREEN`);
+                break;
+            default:
+                addNotification(`🦾 Copilot: Executed ${action}`);
+        }
     };
 
     return (
@@ -897,6 +1128,7 @@ const Dashboard = () => {
 
             {/* Main Content */}
             <div className="flex-1 flex flex-col h-screen overflow-hidden min-w-0">
+                <NewsTicker news={aiNews} />
                 <header className="min-h-[56px] md:h-16 border-b border-slate-800 bg-dark flex items-center px-4 md:px-6 shrink-0 relative z-30 justify-between">
                     <div className="flex items-center gap-3">
                         <button onClick={() => setIsSidebarOpen(true)} className="md:hidden text-slate-400 hover:text-white p-1 focus:outline-none">
@@ -926,10 +1158,14 @@ const Dashboard = () => {
                         <div className="bg-slate-900 rounded-full px-3 py-1.5 md:px-4 md:py-1.5 border border-slate-700 font-mono text-xs md:text-sm whitespace-nowrap flex items-center gap-2 text-primary">
                             <i data-lucide="wallet" className="w-3.5 h-3.5 md:w-4 md:h-4 hidden sm:block"></i> ₹{(wallet.balance || 0).toFixed(2)}
                         </div>
+                        <button onClick={() => setShowSentinel(!showSentinel)} 
+                            className={`p-2 rounded-lg border transition ${showSentinel ? 'bg-primary/20 border-primary text-primary' : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white hover:border-slate-500'}`}>
+                            <i data-lucide="shield-check" className="w-5 h-5"></i>
+                        </button>
                     </div>
                 </header>
                 
-                <div className="flex-1 flex overflow-hidden">
+                <div className="flex-1 flex overflow-hidden relative">
                     <main className={`flex-1 overflow-y-auto p-3 md:p-6 bg-darker ${newsFeed.length > 0 ? 'pt-14 sm:pt-4 md:pt-6' : ''}`}>
                         {activeTab === 'market' && <MarketTab livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} filterType="STOCKS" />}
                         {activeTab === 'mutual_funds' && <MarketTab livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} filterType="MUTUAL_FUNDS" />}
@@ -961,6 +1197,16 @@ const Dashboard = () => {
                         {activeTab === 'ipo' && <IPOTab wallet={wallet} token={token} />}
                         {activeTab === 'wallet' && <WalletTab balance={wallet.balance} token={token} />}
                     </main>
+
+                    {/* Sentinel Insight Sidebar */}
+                    <SentinelInsightSidebar 
+                        isOpen={showSentinel} 
+                        onClose={() => setShowSentinel(false)}
+                        biasData={biasData}
+                        whaleAlerts={whaleAlerts}
+                        news={aiNews}
+                    />
+
                     {/* Trade Tape Side Panel */}
                     {showTape && (
                         <div className="w-52 shrink-0 hidden lg:flex flex-col h-full">
@@ -980,6 +1226,9 @@ const Dashboard = () => {
                     </div>
                 )}
             </div>
+            
+            <WhaleTrackerAlerts alerts={whaleAlerts} />
+            <CopilotOrb token={token} onCommandAction={handleCommandAction} />
         </div>
     );
 };
@@ -1159,10 +1408,18 @@ const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "S
                                 </button>
                             )}
                             
-                            <div>
-                                <label className="text-sm text-slate-400 block mb-2">Quantity</label>
-                                <input type="number" min="1" value={quantity} onChange={e=>setQuantity(e.target.value)}
-                                    className="w-full bg-slate-900 border border-slate-700 rounded px-4 py-3 text-white focus:outline-none focus:border-primary text-lg" />
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-sm text-slate-400 block mb-2">Quantity</label>
+                                    <input type="number" min="1" value={quantity} onChange={e=>setQuantity(e.target.value)}
+                                        className="w-full bg-slate-900 border border-slate-700 rounded px-4 py-3 text-white focus:outline-none focus:border-primary text-lg" />
+                                </div>
+                                <div className="flex flex-col justify-end">
+                                    <label className="text-xs text-slate-500 block mb-2 uppercase tracking-widest font-black">Est. Amount</label>
+                                    <div className="w-full bg-slate-800/30 border border-slate-700/50 rounded px-4 py-3 text-primary font-mono font-bold text-lg flex items-center">
+                                        ₹{(parseFloat(quantity || 0) * (orderType === 'LIMIT' ? parseFloat(limitPrice || 0) : (livePrices[selectedStock] || 0))).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                                    </div>
+                                </div>
                             </div>
                         </div>
                             
@@ -1330,10 +1587,18 @@ const WatchlistTab = ({ watchlist, livePrices, priceHistory, token, onRefresh })
                                 </button>
                             )}
 
-                            <div>
-                                <label className="text-sm text-slate-400 block mb-2">Quantity</label>
-                                <input type="number" min="1" value={quantity} onChange={e=>setQuantity(e.target.value)}
-                                    className="w-full bg-slate-900 border border-slate-700 rounded px-4 py-3 text-white focus:outline-none focus:border-primary text-lg" />
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-sm text-slate-400 block mb-2">Quantity</label>
+                                    <input type="number" min="1" value={quantity} onChange={e=>setQuantity(e.target.value)}
+                                        className="w-full bg-slate-900 border border-slate-700 rounded px-4 py-3 text-white focus:outline-none focus:border-primary text-lg" />
+                                </div>
+                                <div className="flex flex-col justify-end">
+                                    <label className="text-xs text-slate-500 block mb-2 uppercase tracking-widest font-black">Est. Amount</label>
+                                    <div className="w-full bg-slate-800/30 border border-slate-700/50 rounded px-4 py-3 text-primary font-mono font-bold text-lg flex items-center">
+                                        ₹{(parseFloat(quantity || 0) * (orderType === 'LIMIT' ? parseFloat(limitPrice || 0) : (livePrices[selectedStock] || 0))).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         
@@ -1491,6 +1756,9 @@ const PortfolioTab = ({ portfolio, livePrices, token, portfolioHistory }) => {
                                     <td className="p-4 text-right">
                                         {selling === item.symbol ? (
                                             <div className="flex gap-2 justify-end items-center relative">
+                                                <div className="absolute -top-6 right-0 text-[10px] text-slate-500 italic font-medium">
+                                                    Val: ₹{(sellAmount * ltp).toLocaleString(undefined, {maximumFractionDigits:0})}
+                                                </div>
                                                 <input type="number" min="1" max={item.quantity} value={sellAmount} onChange={e=>setSellAmount(e.target.value)} className="w-16 p-1 text-black rounded outline-none" />
                                                 <button onClick={() => handleSell(item.symbol)} className="bg-danger hover:bg-red-600 px-3 py-1 rounded text-white text-sm font-bold transition">Sell</button>
                                                 <button onClick={() => setSelling(null)} className="text-slate-400 hover:text-white px-2 py-1 text-sm">Cancel</button>
@@ -1648,10 +1916,14 @@ const LeaderboardTab = ({ userStats, userEmail, token }) => {
 
 const BotsTab = ({ livePrices, token }) => {
     const [bots, setBots] = useState([]);
+    const [name, setName] = useState("Alpha-1");
     const [symbol, setSymbol] = useState("");
     const [amount, setAmount] = useState("");
-    const [interval, setInterval] = useState("");
+    const [interval, setInterval] = useState("3600");
+    const [isVolAware, setIsVolAware] = useState(false);
+    const [rsiMin, setRsiMin] = useState("");
     const [error, setError] = useState("");
+    const [logs, setLogs] = useState([]);
     
     const loadBots = async () => {
         try {
@@ -1660,14 +1932,32 @@ const BotsTab = ({ livePrices, token }) => {
         } catch (err) { setError(err.message); }
     };
     
-    useEffect(() => { loadBots(); }, []);
+    useEffect(() => { 
+        loadBots();
+        const handleBotTrade = (e) => {
+            if (e.detail?.type === 'bot_trade_executed') {
+                const d = e.detail.data;
+                setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${d.name || 'Bot'} executed BUY for ${d.quantity} ${d.symbol} @ ₹${d.price}`, ...prev.slice(0, 19)]);
+                loadBots();
+            }
+        };
+        window.addEventListener('trading_app_event', handleBotTrade);
+        return () => window.removeEventListener('trading_app_event', handleBotTrade);
+    }, []);
     
     const handleCreate = async (e) => {
         e.preventDefault();
         setError("");
         try {
-            await apiFetch("/trade/bots", "POST", { symbol: symbol.toUpperCase(), amount_per_trade: parseFloat(amount), interval_seconds: parseInt(interval) }, token);
-            setSymbol(""); setAmount(""); setInterval("");
+            await apiFetch("/trade/bots", "POST", { 
+                name,
+                symbol: symbol.toUpperCase(), 
+                amount_per_trade: parseFloat(amount), 
+                interval_seconds: parseInt(interval),
+                is_vol_aware: isVolAware,
+                rsi_min: rsiMin ? parseFloat(rsiMin) : null
+            }, token);
+            setName("Alpha-" + (bots.length + 2)); setSymbol(""); setAmount("");
             loadBots();
         } catch (err) { setError(err.message); }
     };
@@ -1678,50 +1968,141 @@ const BotsTab = ({ livePrices, token }) => {
     };
 
     return (
-        <div>
-            <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><i data-lucide="cpu" className="text-primary"></i> Automated DCA Bots</h2>
-            
-            <div className="bg-dark p-6 rounded-xl border border-slate-800 mb-8 max-w-xl shadow-lg">
-                <h3 className="text-lg font-bold mb-4 flex items-center"><i data-lucide="settings" className="w-5 h-5 mr-2"></i> Configure Parameters</h3>
-                {error && <div className="text-danger mb-4 text-sm bg-danger/10 p-3 rounded border border-danger/30">{error}</div>}
-                <form onSubmit={handleCreate} className="space-y-4">
-                    <div className="flex gap-4 flex-col md:flex-row">
-                        <div className="flex-1">
-                            <label className="text-slate-400 text-sm block mb-1">Target Symbol</label>
-                            <input placeholder="BTC_INR" value={symbol} onChange={e=>setSymbol(e.target.value)} className="w-full bg-slate-900 border border-slate-700/50 rounded px-4 py-2.5 text-white focus:border-primary transition outline-none" required />
-                        </div>
-                        <div className="flex-1">
-                            <label className="text-slate-400 text-sm block mb-1">Trade Size (₹)</label>
-                            <input type="number" min="10" placeholder="1000" value={amount} onChange={e=>setAmount(e.target.value)} className="w-full bg-slate-900 border border-slate-700/50 rounded px-4 py-2.5 text-white focus:border-primary transition outline-none" required />
-                        </div>
-                        <div className="flex-1">
-                            <label className="text-slate-400 text-sm block mb-1">Cycle (Seconds)</label>
-                            <input type="number" min="5" placeholder="10" value={interval} onChange={e=>setInterval(e.target.value)} className="w-full bg-slate-900 border border-slate-700/50 rounded px-4 py-2.5 text-white focus:border-primary transition outline-none" required />
-                        </div>
-                    </div>
-                    <button type="submit" className="w-full bg-primary hover:bg-blue-600 font-bold py-3 rounded text-white shadow-lg shadow-primary/20 transition flex justify-center items-center gap-2"><i data-lucide="zap" className="w-4 h-4"></i> Deploy Autonomous Bot</button>
-                </form>
+        <div className="max-w-7xl mx-auto space-y-8 pb-12">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                    <h2 className="text-3xl font-black flex items-center gap-3 tracking-tighter uppercase italic">
+                        <i data-lucide="cpu" className="text-cyan-400 w-8 h-8 fill-cyan-400/20"></i> Sentinel Autonomous Agents
+                    </h2>
+                    <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Algorithmic Wealth Deployment Hub</p>
+                </div>
             </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {bots.map(bot => (
-                    <div key={bot.id} className="bg-slate-900 p-5 rounded-xl border border-primary/20 relative overflow-hidden shadow-lg group">
-                        <div className="absolute -top-4 -right-4 p-2 opacity-5 text-primary group-hover:scale-110 transition"><i data-lucide="cpu" className="w-32 h-32"></i></div>
-                        <div className="flex justify-between items-start mb-4 relative z-10 border-b border-slate-800 pb-4">
-                            <div>
-                                <h3 className="font-bold text-2xl tracking-tight">{bot.symbol}</h3>
-                                <div className="text-xs text-primary font-mono tracking-widest mt-1 flex items-center "><span className="w-2 h-2 rounded-full bg-primary inline-block mr-2 animate-pulse"></span>ACTIVE POLLING</div>
-                            </div>
-                            <button onClick={()=>handleDelete(bot.id)} className="text-slate-500 hover:text-white hover:bg-danger bg-slate-800 p-2.5 rounded transition border border-slate-700 shadow-sm"><i data-lucide="trash-2" className="w-4 h-4"></i></button>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                {/* Bot Forge */}
+                <div className="bg-slate-900/40 p-8 rounded-3xl border border-white/5 shadow-2xl backdrop-blur-xl relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/5 blur-[80px] -mr-16 -mt-16"></div>
+                    <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2">
+                        <i data-lucide="plus-circle" className="w-4 h-4 text-cyan-400"></i> Commission New Agent
+                    </h3>
+                    {error && <div className="text-rose-400 mb-6 text-[10px] font-black bg-rose-500/10 p-3 rounded-xl border border-rose-500/20">{error}</div>}
+                    <form onSubmit={handleCreate} className="space-y-5">
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Agent Designation</label>
+                            <input placeholder="E.g. HODL-Bot" value={name} onChange={e=>setName(e.target.value)} className="w-full bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-white font-bold outline-none focus:border-cyan-500 transition-all placeholder:text-slate-700" required />
                         </div>
-                        <div className="space-y-3 text-sm text-slate-300 relative z-10 pt-2">
-                            <div className="flex justify-between items-center"><span className="text-slate-500">Execution Size</span> <span className="font-mono font-bold text-white text-base">₹{bot.amount_per_trade.toFixed(2)}</span></div>
-                            <div className="flex justify-between items-center"><span className="text-slate-500">Frequency Vector</span> <span className="font-medium bg-slate-800 px-2 py-0.5 rounded text-xs">Every {bot.interval_seconds}s</span></div>
-                            <div className="flex justify-between items-center pt-2"><span className="text-slate-500 text-xs">Last Action</span> <span className="text-xs font-mono opacity-80">{bot.last_executed ? new Date(bot.last_executed + 'Z').toLocaleTimeString() : 'Awaiting Engine...'}</span></div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Asset</label>
+                                <input placeholder="BTC_INR" value={symbol} onChange={e=>setSymbol(e.target.value)} className="w-full bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-white font-bold outline-none focus:border-cyan-500 transition-all" required />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Alloc (₹)</label>
+                                <input type="number" min="10" placeholder="1000" value={amount} onChange={e=>setAmount(e.target.value)} className="w-full bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-white font-bold outline-none focus:border-cyan-500 transition-all" required />
+                            </div>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Frequency (Seconds)</label>
+                            <select value={interval} onChange={e=>setInterval(e.target.value)} className="w-full bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-white font-bold outline-none focus:border-cyan-500 transition-all appearance-none">
+                                <option value="60">Every 1 Minute (Rapid)</option>
+                                <option value="3600">Every 1 Hour (Steady)</option>
+                                <option value="86400">Every 1 Day (Institutional)</option>
+                                <option value="604800">Every 1 Week (Passive)</option>
+                            </select>
+                        </div>
+                        
+                        <div className="pt-4 space-y-4 border-t border-white/5">
+                             <div className="flex items-center justify-between">
+                                 <div>
+                                     <div className="text-[10px] font-black text-white uppercase tracking-wider italic">Volatility Guard</div>
+                                     <div className="text-[8px] text-slate-500 font-bold">Pause during flash crashes</div>
+                                 </div>
+                                 <button type="button" onClick={()=>setIsVolAware(!isVolAware)} className={`w-10 h-5 rounded-full transition-all relative ${isVolAware ? 'bg-cyan-500' : 'bg-slate-800'}`}>
+                                     <div className={`absolute top-1 w-3 h-3 rounded-full bg-white transition-all ${isVolAware ? 'left-6' : 'left-1'}`}></div>
+                                 </button>
+                             </div>
+                             <div className="flex items-center justify-between">
+                                 <div>
+                                     <div className="text-[10px] font-black text-white uppercase tracking-wider italic">RSI Oversold Floor</div>
+                                     <div className="text-[8px] text-slate-500 font-bold">Buy only when RSI &lt; Value</div>
+                                 </div>
+                                 <input type="number" placeholder="Off" value={rsiMin} onChange={e=>setRsiMin(e.target.value)} className="w-12 bg-black/40 border border-white/10 rounded-lg text-center py-1 text-[10px] font-bold text-cyan-400 outline-none focus:border-cyan-500" />
+                             </div>
+                        </div>
+
+                        <button type="submit" className="w-full bg-cyan-500 hover:bg-cyan-400 font-black py-4 rounded-2xl text-black text-[10px] uppercase tracking-[0.2em] shadow-2xl shadow-cyan-500/20 transition-all active:scale-95 flex justify-center items-center gap-2">
+                            <i data-lucide="zap" className="w-4 h-4 fill-black"></i> Deactivate Constraints & Deploy
+                        </button>
+                    </form>
+                </div>
+
+                {/* Bot Squad */}
+                <div className="lg:col-span-2 space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {bots.map(bot => (
+                            <div key={bot.id} className="bg-slate-900/40 p-6 rounded-3xl border border-white/5 relative overflow-hidden group hover:border-white/10 transition-all">
+                                <div className="absolute top-0 right-0 w-24 h-24 bg-cyan-500/5 blur-[50px] -mr-12 -mt-12 group-hover:bg-cyan-500/10 transition-all"></div>
+                                <div className="flex justify-between items-start mb-5 relative z-10">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center">
+                                            <i data-lucide="bot" className="text-cyan-400 w-5 h-5"></i>
+                                        </div>
+                                        <div>
+                                            <h3 className="font-black text-white italic uppercase tracking-tighter text-lg">{bot.name}</h3>
+                                            <div className="text-[8px] font-black text-cyan-500 tracking-[0.2em] flex items-center gap-1.5 uppercase">
+                                                <span className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse"></span> {bot.status}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <button onClick={()=>handleDelete(bot.id)} className="text-slate-600 hover:text-rose-500 transition-colors p-2 bg-white/5 rounded-xl border border-white/5"><i data-lucide="trash-2" className="w-4 h-4"></i></button>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4 pb-4 border-b border-white/5 mb-4 relative z-10">
+                                    <div className="bg-black/20 p-3 rounded-2xl border border-white/5">
+                                        <div className="text-[8px] font-black text-slate-600 uppercase tracking-wider mb-1">Target Asset</div>
+                                        <div className="text-sm font-black text-white">{bot.symbol}</div>
+                                    </div>
+                                    <div className="bg-black/20 p-3 rounded-2xl border border-white/5">
+                                        <div className="text-[8px] font-black text-slate-600 uppercase tracking-wider mb-1">Cycle Size</div>
+                                        <div className="text-sm font-black text-white">₹{bot.amount_per_trade.toLocaleString()}</div>
+                                    </div>
+                                </div>
+                                <div className="space-y-2 relative z-10">
+                                    <div className="flex justify-between text-[9px] font-black uppercase tracking-widest text-slate-500">
+                                        <span>Strategy</span>
+                                        <span className="text-slate-300">{bot.is_vol_aware ? 'SMART_VOL' : (bot.rsi_min ? 'RSI_DRIVEN' : 'DCA_CORE')}</span>
+                                    </div>
+                                    <div className="flex justify-between text-[9px] font-black uppercase tracking-widest text-slate-500">
+                                        <span>Last Pulse</span>
+                                        <span className="text-slate-300">{bot.last_executed ? new Date(bot.last_executed + 'Z').toLocaleTimeString() : 'Awaiting Engine...'}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+                        {bots.length === 0 && (
+                            <div className="col-span-2 text-slate-600 text-center py-20 border border-dashed border-slate-800 rounded-3xl italic text-xs flex flex-col items-center">
+                                <i data-lucide="cpu" className="w-12 h-12 mb-4 opacity-10"></i>
+                                Central Bot Engine Online. No sub-agents detected.
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Central Log */}
+                    <div className="bg-black/40 border border-white/5 rounded-3xl p-6 h-[280px] flex flex-col relative overflow-hidden group">
+                        <div className="absolute top-0 right-0 p-4 opacity-5 text-cyan-400"><i data-lucide="terminal" className="w-24 h-24"></i></div>
+                        <h3 className="text-[10px] font-black text-slate-600 uppercase tracking-widest mb-4 flex items-center gap-2">
+                             <span className="w-1.5 h-1.5 rounded-full bg-cyan-500"></span> Centralized Execution Kernel (128-bit)
+                        </h3>
+                        <div className="flex-1 overflow-y-auto custom-scrollbar font-mono text-[9px] space-y-2 pr-2">
+                             {logs.map((log, i) => (
+                                 <div key={i} className="text-slate-400 flex items-start gap-3 animate-in fade-in slide-in-from-left-2 duration-300">
+                                     <span className="text-cyan-500 opacity-40 shrink-0">≫</span>
+                                     <span className="opacity-80 lowercase tracking-tighter">{log}</span>
+                                 </div>
+                             ))}
+                             {logs.length === 0 && <div className="text-slate-700 italic">No execution pulses recorded in current session...</div>}
                         </div>
                     </div>
-                ))}
-                {bots.length === 0 && <div className="text-slate-500 col-span-3 text-center py-12 border border-dashed border-slate-800 rounded-xl bg-darker/50"><i data-lucide="server" className="w-12 h-12 mx-auto mb-4 opacity-20"></i>No active algorithms. Deploy your first autonomous DCA node above.</div>}
+                </div>
             </div>
         </div>
     );
@@ -1738,41 +2119,118 @@ const ProfileTab = ({ user, token }) => {
         "High Roller": "gem"
     };
 
-    return (
-        <div className="max-w-4xl mx-auto">
-            <h2 className="text-2xl font-bold mb-8 flex items-center gap-3"><i data-lucide="user" className="text-primary w-8 h-8"></i> Trader Profile</h2>
-            
-            <div className="bg-dark p-8 rounded-2xl border border-slate-800 flex items-center gap-6 mb-8 shadow-xl">
-                <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-primary to-purple-600 flex items-center justify-center text-4xl font-bold shadow-lg">
-                    {user?.email?.[0].toUpperCase()}
-                </div>
-                <div>
-                    <h3 className="text-3xl font-bold">{user?.email}</h3>
-                    <p className="text-slate-400 mt-1 flex items-center gap-2"><i data-lucide="shield-check" className="w-4 h-4 text-success"></i> Verified Trader Account</p>
-                </div>
-            </div>
+    const xpToNext = 1000 - (user?.xp % 1000 || 0);
+    const progress = ((user?.xp % 1000) / 1000) * 100 || 5;
 
-            <h3 className="text-xl font-bold mb-4 flex items-center gap-2"><i data-lucide="award" className="text-amber-400"></i> Unlockable Achievements</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {achievements.map((ach, i) => (
-                    <div key={i} className="bg-gradient-to-br from-slate-900 to-dark p-6 rounded-xl border border-amber-500/30 shadow-[0_0_15px_rgba(245,158,11,0.1)] flex items-start gap-4 transform transition hover:-translate-y-1">
-                        <div className="w-12 h-12 bg-amber-500/20 rounded-full flex items-center justify-center shrink-0">
-                            <i data-lucide={ICONS[ach.badge_name] || "star"} className="text-amber-400 w-6 h-6"></i>
+    return (
+        <div className="max-w-6xl mx-auto space-y-10 pb-20">
+            <div className="flex flex-col lg:flex-row gap-10">
+                {/* ID Dossier Column */}
+                <div className="lg:w-1/3 space-y-6">
+                    <div className="bg-slate-900/60 p-8 rounded-[2rem] border border-white/5 relative overflow-hidden shadow-2xl backdrop-blur-xl group">
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/5 blur-[80px] -mr-16 -mt-16 group-hover:bg-indigo-500/10 transition-all"></div>
+                        <div className="flex flex-col items-center text-center">
+                            <div className="w-32 h-32 rounded-[2.5rem] bg-gradient-to-tr from-indigo-600 to-violet-500 p-1 mb-6 shadow-2xl shadow-indigo-500/20">
+                                <div className="w-full h-full rounded-[2.2rem] bg-slate-900 flex items-center justify-center text-5xl font-black italic text-white">
+                                    {user?.email?.[0].toUpperCase()}
+                                </div>
+                            </div>
+                            <h3 className="text-2xl font-black text-white italic tracking-tighter uppercase">{user?.email?.split('@')[0]}</h3>
+                            <div className="mt-2 inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-[10px] font-black uppercase tracking-widest">
+                                <i data-lucide="shield-check" className="w-3.5 h-3.5"></i> Sentinel Level {user?.level || 1}
+                            </div>
                         </div>
-                        <div>
-                            <h4 className="font-bold text-lg text-amber-500">{ach.badge_name}</h4>
-                            <p className="text-sm text-slate-300 mt-1">{ach.description}</p>
-                            <div className="text-xs text-slate-500 mt-3 flex items-center gap-1"><i data-lucide="calendar" className="w-3 h-3"></i> Unlocked {new Date(ach.unlocked_at + 'Z').toLocaleDateString()}</div>
+
+                        <div className="mt-10 space-y-4 pt-10 border-t border-white/5">
+                            <div className="flex justify-between items-end mb-1">
+                                <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">XP Progression</span>
+                                <span className="text-[10px] font-black text-slate-300 italic">{user?.xp || 0} / 1000 XP</span>
+                            </div>
+                            <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden p-0.5 border border-white/5">
+                                <div className="h-full bg-gradient-to-r from-indigo-500 to-violet-400 rounded-full transition-all duration-1000" style={{ width: `${progress}%` }}></div>
+                            </div>
+                            <p className="text-[8px] text-slate-600 font-bold uppercase tracking-widest text-center">{xpToNext} XP until Tier Advancement</p>
                         </div>
                     </div>
-                ))}
-                {achievements.length === 0 && (
-                    <div className="col-span-2 text-center py-16 border border-dashed border-slate-800 rounded-xl bg-darker/50">
-                        <i data-lucide="lock" className="w-16 h-16 mx-auto mb-4 opacity-20 text-slate-400"></i>
-                        <p className="text-slate-400 font-medium">No Badges Unlocked Yet</p>
-                        <p className="text-sm text-slate-500 mt-1">Keep trading scaling volume to earn rare milestones.</p>
+
+                    <div className="bg-black/20 p-6 rounded-3xl border border-white/5 space-y-4">
+                        <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                            <i data-lucide="crosshair" className="w-4 h-4 text-rose-500"></i> Tactical Profile
+                        </h4>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="p-4 rounded-2xl bg-white/5 border border-white/5 text-center">
+                                <div className="text-[8px] font-black text-slate-600 uppercase mb-1">Archetype</div>
+                                <div className="text-xs font-black text-indigo-400">{user?.trading_style || "SCALPER"}</div>
+                            </div>
+                            <div className="p-4 rounded-2xl bg-white/5 border border-white/5 text-center">
+                                <div className="text-[8px] font-black text-slate-600 uppercase mb-1">Risk DNA</div>
+                                <div className="text-xs font-black text-rose-400">Chaos-Edge</div>
+                            </div>
+                        </div>
                     </div>
-                )}
+                </div>
+
+                {/* Analytics & Awards Column */}
+                <div className="lg:w-2/3 space-y-8">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        {/* Risk DNA Gauge */}
+                        <div className="bg-slate-900/40 p-8 rounded-[2rem] border border-white/5 relative overflow-hidden group">
+                           <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-6">Risk Spectrum Analyzer</h4>
+                           <div className="relative h-24 flex items-center justify-center">
+                                <div className="absolute inset-0 bg-gradient-to-r from-emerald-500 via-amber-400 to-rose-500 opacity-20 blur-2xl rounded-full"></div>
+                                <div className="w-full h-4 bg-black/40 rounded-full border border-white/5 p-1 relative z-10">
+                                    <div className="absolute top-1/2 left-[70%] -translate-x-1/2 -translate-y-1/2 w-6 h-6 bg-white rounded-full shadow-2xl shadow-white/50 border-4 border-slate-900 z-20"></div>
+                                    <div className="h-full w-[70%] bg-gradient-to-r from-emerald-500 via-amber-400 to-rose-500 rounded-full"></div>
+                                </div>
+                                <div className="absolute bottom-0 w-full flex justify-between px-2 pt-4">
+                                    <span className="text-[8px] font-black text-emerald-400 uppercase tracking-widest">CONSERVATIVE</span>
+                                    <span className="text-[8px] font-black text-rose-500 uppercase tracking-widest italic">CHAOS</span>
+                                </div>
+                           </div>
+                        </div>
+
+                        {/* Summary Stats */}
+                        <div className="bg-slate-900/40 p-8 rounded-[2rem] border border-white/5 grid grid-cols-2 gap-4">
+                            <div className="text-center p-4 border-r border-white/5">
+                                <div className="text-[8px] font-black text-slate-500 uppercase mb-2 italic">Trades</div>
+                                <div className="text-3xl font-black text-white italic">42</div>
+                            </div>
+                            <div className="text-center p-4">
+                                <div className="text-[8px] font-black text-slate-500 uppercase mb-2 italic">Win Velocity</div>
+                                <div className="text-3xl font-black text-emerald-400 italic">82%</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="space-y-6">
+                        <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest border-b border-white/5 pb-4 flex items-center gap-2">
+                            <i data-lucide="award" className="text-amber-400"></i> Sentinel Service Ribbons
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {achievements.map((ach, i) => (
+                                <div key={i} className="bg-white/5 p-5 rounded-[1.5rem] border border-white/5 flex items-start gap-5 hover:bg-white/10 transition-all hover:scale-[1.02] active:scale-95 group">
+                                    <div className="w-14 h-14 bg-gradient-to-tr from-slate-800 to-slate-700/50 rounded-2xl flex items-center justify-center shrink-0 border border-white/5 group-hover:border-amber-400/50 transition-all">
+                                        <i data-lucide={ICONS[ach.badge_name] || "star"} className="text-amber-400 w-7 h-7 filter drop-shadow-[0_0_8px_rgba(245,158,11,0.4)]"></i>
+                                    </div>
+                                    <div>
+                                        <h4 className="font-black text-base text-white uppercase italic tracking-tighter">{ach.badge_name}</h4>
+                                        <p className="text-[10px] text-slate-400 font-bold tracking-tight mt-1 leading-relaxed">{ach.description}</p>
+                                        <div className="text-[8px] text-slate-600 mt-4 font-black uppercase tracking-widest flex items-center gap-1.5 opacity-60">
+                                            <i data-lucide="calendar" className="w-3 h-3"></i> {new Date(ach.unlocked_at + 'Z').toLocaleDateString()}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                            {achievements.length === 0 && (
+                                <div className="col-span-2 text-center py-20 border border-dashed border-slate-800 rounded-[2rem] bg-black/20">
+                                    <i data-lucide="lock" className="w-16 h-16 mx-auto mb-4 opacity-10 text-slate-400"></i>
+                                    <p className="text-slate-500 font-black uppercase tracking-widest text-[10px]">No Service Ribbons Awarded</p>
+                                    <p className="text-[8px] text-slate-700 font-bold mt-2 uppercase tracking-tight">Deploy capital to initiate carrier progression.</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     );
@@ -1867,13 +2325,9 @@ const AlertsTab = ({ token }) => {
 };
 
 const DerivativesTab = ({ token, livePrices }) => {
+    const [subTab, setSubTab] = useState('manual'); // 'manual', 'wizard', 'surface'
     const [options, setOptions] = useState([]);
-    const [symbol, setSymbol] = useState("");
-    const [strike, setStrike] = useState("");
-    const [qty, setQty] = useState("");
-    const [type, setType] = useState("CALL");
-    const [expiry, setExpiry] = useState("5");
-    const [error, setError] = useState("");
+    const [preFill, setPreFill] = useState(null);
 
     const loadOptions = async () => {
         try {
@@ -1881,93 +2335,287 @@ const DerivativesTab = ({ token, livePrices }) => {
             setOptions(data);
         } catch(e) { console.error(e); }
     };
-    
     useEffect(() => { loadOptions(); }, [token]);
+
+    const handleSelect = (symbol, strike, type) => {
+        setPreFill({ symbol, strike, type });
+        setSubTab('manual');
+    };
+
+    return (
+        <div className="max-w-7xl mx-auto pb-20">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
+                <div>
+                  <h2 className="text-3xl font-black flex items-center gap-3 tracking-tighter uppercase italic">
+                      <i data-lucide="zap" className="text-amber-400 w-8 h-8 fill-amber-400/20"></i> Sentinel Strategy Forge
+                  </h2>
+                  <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">High-Precision Derivative Architecture</p>
+                </div>
+                
+                <div className="flex p-1 bg-slate-900 border border-white/5 rounded-xl gap-1 shrink-0">
+                    {[
+                        { id: 'manual', label: 'Manual Order', icon: 'mouse-pointer-2' },
+                        { id: 'wizard', label: 'Strategy Wizard', icon: 'wand-2' },
+                        { id: 'surface', label: 'Greek Surface', icon: 'layers' }
+                    ].map(t => (
+                        <button key={t.id} onClick={() => setSubTab(t.id)} 
+                            className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center gap-2 transition-all ${subTab === t.id ? 'bg-amber-500 text-black shadow-lg shadow-amber-900/30' : 'text-slate-500 hover:text-slate-300'}`}>
+                            <i data-lucide={t.icon} className="w-3.5 h-3.5"></i> {t.label}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+                <div className="lg:col-span-3">
+                    {subTab === 'manual' && <ManualOptionsForm onRefresh={loadOptions} token={token} livePrices={livePrices} preFill={preFill} />}
+                    {subTab === 'wizard' && <StrategyWizard token={token} livePrices={livePrices} onSelect={handleSelect} />}
+                    {subTab === 'surface' && <GreekSurface token={token} livePrices={livePrices} />}
+                </div>
+                
+                <div className="space-y-6">
+                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest border-b border-white/5 pb-2 flex justify-between items-center">
+                        Active Contracts
+                        <span className="bg-amber-500/10 text-amber-500 px-2 py-0.5 rounded text-[8px] animate-pulse">LIVE POLLING</span>
+                    </h3>
+                    <div className="space-y-4 max-h-[70vh] overflow-y-auto custom-scrollbar pr-2">
+                        {options.map(opt => <OptionContractCard key={opt.id} opt={opt} />)}
+                        {options.length === 0 && <div className="text-slate-600 text-center py-12 border border-dashed border-slate-800 rounded-2xl italic text-[10px]">No active derivative exposure.</div>}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const ManualOptionsForm = ({ onRefresh, token, livePrices, preFill }) => {
+    const [symbol, setSymbol] = useState(preFill?.symbol || "");
+    const [strike, setStrike] = useState(preFill?.strike || "");
+    const [qty, setQty] = useState("");
+    const [type, setType] = useState(preFill?.type || "CALL");
+    const [expiry, setExpiry] = useState("43200"); // 30 days
+    const [error, setError] = useState("");
+
+    useEffect(() => {
+        if (preFill) {
+            setSymbol(preFill.symbol);
+            setStrike(preFill.strike);
+            setType(preFill.type);
+        }
+    }, [preFill]);
 
     const handleBuy = async (e) => {
         e.preventDefault();
         setError("");
         try {
-            await apiFetch("/trade/options", "POST", { symbol: symbol.toUpperCase(), strike_price: parseFloat(strike), quantity: parseInt(qty), option_type: type, expires_in_minutes: parseInt(expiry) }, token);
-            loadOptions();
+            await apiFetch("/trade/options/buy", "POST", { 
+                symbol: symbol.toUpperCase(), 
+                strike_price: parseFloat(strike), 
+                quantity: parseInt(qty), 
+                option_type: type, 
+                expires_in_minutes: parseInt(expiry) 
+            }, token);
+            onRefresh();
             setSymbol(""); setStrike(""); setQty("");
         } catch(e) { setError(e.message); }
     };
 
     return (
-        <div className="max-w-6xl mx-auto">
-            <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><i data-lucide="zap" className="text-primary w-6 h-6"></i> Options Engine</h2>
-            
-            <div className="bg-gradient-to-br from-slate-900 to-dark p-6 rounded-xl border border-primary/30 mb-8 shadow-2xl flex flex-col md:flex-row gap-8">
-                <div className="flex-1">
-                    <h3 className="text-lg font-bold mb-4 flex items-center"><i data-lucide="shopping-cart" className="w-5 h-5 mr-2"></i> Purchase Contract</h3>
-                    {error && <div className="text-danger mb-4 text-sm bg-danger/10 p-3 rounded border border-danger/30">{error}</div>}
-                    <form onSubmit={handleBuy} className="space-y-4">
-                        <div className="flex gap-4">
-                            <div className="flex-1">
-                                <label className="text-slate-400 text-xs block mb-1">Asset Symbol</label>
-                                <input placeholder="BTC_INR" value={symbol} onChange={e=>setSymbol(e.target.value)} className="w-full bg-slate-800 border border-slate-700/50 rounded px-3 py-2 text-white outline-none focus:border-primary" required />
-                            </div>
-                            <div className="flex-1">
-                                <label className="text-slate-400 text-xs block mb-1">Contract Quantity</label>
-                                <input type="number" min="1" placeholder="100" value={qty} onChange={e=>setQty(e.target.value)} className="w-full bg-slate-800 border border-slate-700/50 rounded px-3 py-2 text-white outline-none focus:border-primary" required />
-                            </div>
-                        </div>
-                        <div className="flex gap-4">
-                            <div className="flex-1">
-                                <label className="text-slate-400 text-xs block mb-1">Strike Target (₹)</label>
-                                <input type="number" step="0.01" min="1" placeholder="90000" value={strike} onChange={e=>setStrike(e.target.value)} className="w-full bg-slate-800 border border-slate-700/50 rounded px-3 py-2 text-white outline-none focus:border-primary" required />
-                            </div>
-                            <div className="flex-1">
-                                <label className="text-slate-400 text-xs block mb-1">Type</label>
-                                <select value={type} onChange={e=>setType(e.target.value)} className="w-full bg-slate-800 border border-slate-700/50 rounded px-3 py-2.5 text-white outline-none focus:border-primary">
-                                    <option value="CALL">Call (Bullish)</option>
-                                    <option value="PUT">Put (Bearish)</option>
-                                </select>
-                            </div>
-                            <div className="flex-1">
-                                <label className="text-slate-400 text-xs block mb-1">Expiry Frame</label>
-                                <select value={expiry} onChange={e=>setExpiry(e.target.value)} className="w-full bg-slate-800 border border-slate-700/50 rounded px-3 py-2.5 text-white outline-none focus:border-primary">
-                                    <option value="1">1 Minute (Turbo)</option>
-                                    <option value="5">5 Minutes</option>
-                                    <option value="15">15 Minutes</option>
-                                    <option value="60">1 Hour</option>
-                                </select>
-                            </div>
-                        </div>
-                        <button type="submit" className={`w-full font-bold py-3 rounded text-white shadow-lg transition flex justify-center items-center gap-2 ${type==='CALL'?'bg-success hover:bg-green-600 shadow-success/20':'bg-danger hover:bg-red-600 shadow-danger/20'}`}><i data-lucide="bolt" className="w-4 h-4"></i> Execute {type} Order ~{(livePrices[symbol.toUpperCase()] ? (livePrices[symbol.toUpperCase()]*0.05*qty).toFixed(2) : 'Est.')}</button>
-                    </form>
+        <div className="bg-slate-900/40 p-8 rounded-3xl border border-white/5 shadow-3xl backdrop-blur-3xl relative overflow-hidden group">
+            <div className="absolute top-0 right-0 w-64 h-64 bg-amber-500/5 blur-[100px] -mr-32 -mt-32"></div>
+            <h3 className="text-lg font-black mb-6 flex items-center gap-2 uppercase italic tracking-tighter">
+                <i data-lucide="crosshair" className="text-amber-400 w-5 h-5"></i> Tactile Execution Entry
+            </h3>
+            {error && <div className="text-rose-400 mb-6 text-[10px] font-black bg-rose-500/10 p-4 rounded-xl border border-rose-500/20 flex items-center gap-2 uppercase tracking-widest"><i data-lucide="alert-triangle" className="w-4 h-4"></i> {error}</div>}
+            <form onSubmit={handleBuy} className="space-y-6">
+                <div className="grid grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Asset Identifier</label>
+                        <input placeholder="NIFTY_50" value={symbol} onChange={e=>setSymbol(e.target.value)} className="w-full bg-black/40 border border-white/10 rounded-2xl px-5 py-4 text-white font-bold outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-500/10 transition-all placeholder:text-slate-700" required />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Volume (Contracts)</label>
+                        <input type="number" min="1" placeholder="50" value={qty} onChange={e=>setQty(e.target.value)} className="w-full bg-black/40 border border-white/10 rounded-2xl px-5 py-4 text-white font-bold outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-500/10 transition-all" required />
+                    </div>
                 </div>
-            </div>
-            
-            <h3 className="text-lg font-bold mb-4 flex items-center border-b border-slate-800 pb-2"><i data-lucide="layers" className="w-5 h-5 mr-2"></i> Active & Settled Contracts</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {options.map(opt => {
-                    const isMatured = new Date(opt.expires_at+'Z') < new Date();
-                    return (
-                    <div key={opt.id} className={`bg-slate-900 p-5 rounded-xl border relative shadow-lg ${opt.is_settled ? 'border-slate-800 opacity-60' : (opt.option_type==='CALL'?'border-success/30':'border-danger/30')}`}>
-                        <div className="flex justify-between items-start mb-4 relative z-10 border-b border-slate-800 pb-3">
-                            <div>
-                                <h3 className="font-bold text-xl tracking-tight">{opt.symbol}</h3>
-                                <div className={`text-xs font-bold mt-1 inline-flex items-center px-2 py-0.5 rounded ${opt.option_type==='CALL'?'bg-success/20 text-success':'bg-danger/20 text-danger'}`}>{opt.option_type} CONTRACT</div>
-                            </div>
-                            <div className="text-right">
-                                <div className="font-mono text-sm">Strike ₹{opt.strike_price.toFixed(2)}</div>
-                                <div className="text-xs text-slate-500 mt-1">QTY: {opt.quantity}</div>
-                            </div>
-                        </div>
-                        <div className="space-y-2 text-sm text-slate-300">
-                            <div className="flex justify-between"><span className="text-slate-500">Premium Paid</span> <span className="font-mono">₹{opt.premium_paid.toFixed(2)}</span></div>
-                            <div className="flex justify-between"><span className="text-slate-500">Status</span> <span className={`font-bold ${opt.is_settled?'text-slate-400':'text-primary animate-pulse'}`}>{opt.is_settled ? 'Settled' : 'Live Polling...'}</span></div>
-                            <div className="flex justify-between items-center pt-2"><span className="text-slate-500 text-xs">Expires At</span> <span className="text-xs font-mono">{new Date(opt.expires_at+'Z').toLocaleTimeString()}</span></div>
+                <div className="grid grid-cols-3 gap-6">
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Strike Target (₹)</label>
+                        <input type="number" step="0.01" min="1" placeholder="22000" value={strike} onChange={e=>setStrike(e.target.value)} className="w-full bg-black/40 border border-white/10 rounded-2xl px-5 py-4 text-white font-bold outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-500/10 transition-all" required />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Contract Type</label>
+                        <div className="flex p-1 bg-black/40 rounded-2xl border border-white/10">
+                            {['CALL','PUT'].map(t => (
+                                <button key={t} type="button" onClick={() => setType(t)} className={`flex-1 py-3 text-[10px] font-black rounded-xl transition-all ${type === t ? (t === 'CALL' ? 'bg-emerald-500 text-white shadow-xl shadow-emerald-500/20' : 'bg-rose-500 text-white shadow-xl shadow-rose-500/20') : 'text-slate-500 hover:text-slate-300'}`}>
+                                    {t === 'CALL' ? 'BULL CALL' : 'BEAR PUT'}
+                                </button>
+                            ))}
                         </div>
                     </div>
-                )})}
-                {options.length === 0 && <div className="text-slate-500 col-span-3 text-center py-12 border border-dashed border-slate-800 rounded-xl bg-darker/50"><i data-lucide="slash" className="w-12 h-12 mx-auto mb-4 opacity-20"></i>No derivative contracts found in ledger.</div>}
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Time Horizon</label>
+                        <select value={expiry} onChange={e=>setExpiry(e.target.value)} className="w-full bg-black/40 border border-white/10 rounded-2xl px-5 py-4 text-white font-bold outline-none focus:border-amber-500 transition-all text-sm appearance-none">
+                            <option value="60">1 Hour (Intraday)</option>
+                            <option value="1440">1 Day (Swing)</option>
+                            <option value="10080">1 Week (Tactical)</option>
+                            <option value="43200">30 Days (Institutional)</option>
+                        </select>
+                    </div>
+                </div>
+                <button type="submit" className={`w-full font-black py-5 rounded-2xl text-xs uppercase tracking-[0.2em] transition-all flex justify-center items-center gap-3 active:scale-[0.98] ${type==='CALL'?'bg-emerald-500 hover:bg-emerald-400 text-white shadow-2xl shadow-emerald-500/30' : 'bg-rose-500 hover:bg-rose-400 text-white shadow-2xl shadow-rose-500/30'}`}>
+                    <i data-lucide="zap" className="w-4 h-4 fill-white"></i> Initiate Authorization Logic
+                </button>
+            </form>
+        </div>
+    );
+};
+
+const StrategyWizard = ({ token, livePrices, onTrade }) => {
+    const [outlook, setOutlook] = useState('bullish'); // bullish, bearish, neutral, high_vol
+    const [symbol] = useState('NIFTY_50');
+    
+    const strategies = {
+        bullish: [
+            { name: 'Long Call', risk: 'Limited', reward: 'Unlimited', confidence: 95, icon: 'trending-up', color: 'emerald' },
+            { name: 'Bull Call Spread', risk: 'Low', reward: 'Capped', confidence: 80, icon: 'layers', color: 'emerald' }
+        ],
+        bearish: [
+            { name: 'Long Put', risk: 'Limited', reward: 'Unlimited', confidence: 92, icon: 'trending-down', color: 'rose' },
+            { name: 'Bear Put Spread', risk: 'Low', reward: 'Capped', confidence: 82, icon: 'layers', color: 'rose' }
+        ],
+        neutral: [
+            { name: 'Iron Condor', risk: 'Low', reward: 'Fixed', confidence: 75, icon: 'binary', color: 'amber' },
+            { name: 'Short Straddle', risk: 'Very High', reward: 'Fixed', confidence: 60, icon: 'refresh-cw', color: 'orange' }
+        ],
+        high_vol: [
+            { name: 'Long Straddle', risk: 'Limited', reward: 'Unlimited', confidence: 88, icon: 'zap', color: 'blue' },
+            { name: 'Long Strangle', risk: 'Lower Premium', reward: 'Unlimited', confidence: 85, icon: 'arrow-up-right', color: 'cyan' }
+        ]
+    };
+
+    return (
+        <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="bg-slate-900/40 p-8 rounded-3xl border border-white/5">
+                <h3 className="text-sm font-black text-slate-500 uppercase tracking-widest mb-6 flex items-center gap-2">
+                    <i data-lucide="compass" className="w-4 h-4"></i> Select Market Sentiment
+                </h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {[
+                        { id: 'bullish', label: 'BULLISH', hint: 'Price up 📈', color: 'emerald' },
+                        { id: 'bearish', label: 'BEARISH', hint: 'Price down 📉', color: 'rose' },
+                        { id: 'neutral', label: 'NEUTRAL', hint: 'Sideways ↔️', color: 'amber' },
+                        { id: 'high_vol', label: 'VOLATILE', hint: 'Big move ⚡', color: 'purple' }
+                    ].map(opt => (
+                        <button key={opt.id} onClick={() => setOutlook(opt.id)}
+                            className={`p-6 rounded-2xl border text-left transition-all duration-300 group ${outlook === opt.id ? `bg-${opt.color}-500/10 border-${opt.color}-500/40 ring-4 ring-${opt.color}-500/5` : 'bg-black/20 border-white/5 hover:border-white/10'}`}>
+                            <div className={`text-[10px] font-black mb-1 transition-colors ${outlook === opt.id ? `text-${opt.color}-400` : 'text-slate-600'}`}>{opt.label}</div>
+                            <div className="text-xs font-bold text-slate-300">{opt.hint}</div>
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {strategies[outlook].map((strat, idx) => (
+                    <div key={idx} className="bg-slate-900/40 border border-white/5 rounded-3xl p-6 hover:border-white/10 transition-colors relative group overflow-hidden">
+                        <div className={`absolute top-0 right-0 w-32 h-32 bg-${strat.color}-500/5 blur-[50px] -mr-16 -mt-16 group-hover:bg-${strat.color}-500/10 transition-all`}></div>
+                        <div className="flex justify-between items-start mb-6">
+                            <div className="flex items-center gap-3">
+                                <div className={`w-10 h-10 rounded-xl bg-${strat.color}-500/10 border border-${strat.color}-500/20 flex items-center justify-center`}>
+                                    <i data-lucide={strat.icon} className={`w-5 h-5 text-${strat.color}-400`}></i>
+                                </div>
+                                <div>
+                                    <h4 className="font-black text-white italic uppercase tracking-tighter">{strat.name}</h4>
+                                    <div className="flex gap-2 mt-1">
+                                        <span className={`text-[8px] font-black px-1.5 py-0.5 rounded bg-white/5 text-slate-500`}>RISK: {strat.risk}</span>
+                                        <span className={`text-[8px] font-black px-1.5 py-0.5 rounded bg-white/5 text-slate-500`}>REWARD: {strat.reward}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="text-right">
+                                <div className={`text-[10px] font-black text-${strat.color}-400`}>{strat.confidence}%</div>
+                                <div className="text-[8px] text-slate-600 uppercase font-bold">SENTINEL SCORE</div>
+                            </div>
+                        </div>
+                        <button onClick={() => onSelect(symbol, livePrices[symbol] || 0, strat.name.includes('Put') ? 'PUT' : 'CALL')} 
+                            className={`w-full py-3 rounded-xl bg-${strat.color}-500/10 border border-${strat.color}-500/20 text-${strat.color}-400 text-[10px] font-black uppercase tracking-widest hover:bg-${strat.color}-500 hover:text-white transition-all`}>
+                            Configure Setup
+                        </button>
+                    </div>
+                ))}
             </div>
         </div>
     );
 };
+
+const GreekSurface = ({ symbol = 'NIFTY_50', token }) => {
+    const [chain, setChain] = useState([]);
+    useEffect(() => {
+        const fetch = async () => {
+            try {
+                const data = await apiFetch(`/trade/options/chain/${symbol}`, 'GET', null, token);
+                setChain(data.chain);
+            } catch(e) {}
+        };
+        fetch();
+    }, [symbol]);
+
+    return (
+        <div className="bg-slate-900/40 border border-white/5 rounded-3xl p-8">
+            <h3 className="text-sm font-black text-slate-500 uppercase tracking-widest mb-6 flex items-center gap-2">
+                <i data-lucide="layers" className="w-4 h-4 text-purple-400"></i> Derivative Greek Heatmap
+            </h3>
+            <div className="grid grid-cols-5 gap-1 shrink-0 mb-2 px-2">
+                {['Strike','Delta','Gamma','Theta','Vega'].map(h => <div key={h} className="text-[8px] font-black text-slate-600 uppercase tracking-[0.2em]">{h}</div>)}
+            </div>
+            <div className="space-y-1 h-[400px] overflow-y-auto custom-scrollbar pr-2">
+                 {chain.map((row, i) => (
+                     <div key={i} className="grid grid-cols-5 gap-1 group">
+                         <div className="bg-black/20 p-2 text-[9px] font-mono text-slate-400 border border-white/5 transition-colors group-hover:border-white/20">₹{row.strike}</div>
+                         <GreekCell val={row.call.delta} type="delta" />
+                         <GreekCell val={row.call.gamma} type="gamma" />
+                         <GreekCell val={row.call.theta} type="theta" />
+                         <GreekCell val={row.call.vega} type="vega" />
+                     </div>
+                 ))}
+            </div>
+        </div>
+    );
+};
+
+const GreekCell = ({ val, type }) => {
+    const opacity = type === 'delta' ? Math.abs(val) : Math.min(Math.abs(val) * 10, 1);
+    const color = val >= 0 ? 'rgba(16,185,129,' : 'rgba(239,68,68,';
+    return (
+        <div className="p-2 text-[9px] font-mono flex items-center justify-center border border-white/5" style={{ backgroundColor: `${color}${opacity * 0.2})`, color: val>=0?'#10b981':'#ef4444' }}>
+            {val.toFixed(3)}
+        </div>
+    );
+};
+
+const OptionContractCard = ({ opt }) => (
+    <div className={`bg-slate-900/40 p-5 rounded-2xl border transition-all hover:bg-slate-900/60 group relative overflow-hidden ${opt.is_settled ? 'border-slate-800 opacity-60' : 'border-white/5'}`}>
+        {!opt.is_settled && <div className="absolute top-0 right-0 w-16 h-16 bg-blue-500/5 blur-2xl"></div>}
+        <div className="flex justify-between items-start mb-4 relative z-10">
+            <div>
+                <h4 className="font-black text-sm tracking-tight text-white">{opt.symbol}</h4>
+                <div className={`text-[8px] font-black mt-1 inline-flex items-center px-1.5 py-0.5 rounded ${opt.option_type==='CALL'?'bg-emerald-500/20 text-emerald-400':'bg-rose-500/20 text-rose-400'}`}>{opt.option_type} CONTRACT</div>
+            </div>
+            <div className="text-right">
+                <div className="font-mono text-[10px] text-slate-300">STRIKE: ₹{opt.strike_price.toLocaleString()}</div>
+                <div className="text-[9px] text-slate-500 mt-0.5">QTY: {opt.quantity}</div>
+            </div>
+        </div>
+        <div className="space-y-1.5 text-[10px] text-slate-400 relative z-10 font-medium">
+            <div className="flex justify-between"><span>Premium Net</span> <span className="font-mono text-slate-300">₹{opt.premium_paid.toLocaleString()}</span></div>
+            <div className="flex justify-between items-center py-2 border-t border-white/5 mt-2">
+                <span className="text-[10px] bg-white/5 px-2 py-0.5 rounded-full font-bold">{opt.is_settled ? 'FINALIZED' : 'OPEN POS'}</span>
+                <span className="text-[8px] font-mono opacity-40">{new Date(opt.expires_at+'Z').toLocaleDateString()} {new Date(opt.expires_at+'Z').toLocaleTimeString()}</span>
+            </div>
+        </div>
+    </div>
+);
 
 const WalletTab = ({ balance, token }) => {
     const [amount, setAmount] = useState("");
@@ -2113,6 +2761,93 @@ const OrderBookDepth = ({ symbol }) => {
     )
 }
 
+const ProOptionsChain = ({ symbol, token }) => {
+    const [chain, setChain] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [side, setSide] = useState('CALL');
+    const [qty, setQty] = useState(50);
+    const [buying, setBuying] = useState(false);
+
+    const loadChain = async () => {
+        setLoading(true);
+        try {
+            const data = await apiFetch(`/trade/options/chain/${symbol}`, 'GET', null, token);
+            setChain(data.chain);
+        } catch(e) {}
+        setLoading(false);
+    };
+
+    useEffect(() => { if(symbol) loadChain(); }, [symbol]);
+
+    const handleBuy = async (strike) => {
+        setBuying(true);
+        try {
+            await apiFetch("/trade/options/buy", "POST", {
+                symbol: symbol,
+                strike_price: strike,
+                quantity: qty,
+                option_type: side,
+                expires_in_minutes: 43200 // 30 days
+            }, token);
+            alert(`Derivative Position Opened: ${qty} x ${symbol} ₹${strike} ${side}`);
+        } catch (e) {
+            alert(e.message);
+        }
+        setBuying(false);
+    };
+
+    if (loading) return <div className="p-10 text-center animate-pulse text-amber-500 italic text-[10px] font-black tracking-widest uppercase">Initializing Greeks Architecture...</div>;
+    if (!chain) return <div className="p-10 text-center text-slate-500 italic text-[10px] uppercase font-black">No derivative depth found for {symbol}</div>;
+
+    return (
+        <div className="flex flex-col h-full font-mono">
+            <div className="bg-slate-900 px-4 py-3 border-b border-white/5 flex justify-between items-center shrink-0">
+               <div className="flex bg-black/40 rounded-lg p-0.5 border border-white/5">
+                    <button onClick={() => setSide('CALL')} className={`px-4 py-1.5 rounded-md text-[9px] font-black transition-all ${side === 'CALL' ? 'bg-emerald-500 text-white shadow-xl shadow-emerald-500/20' : 'text-slate-500'}`}>CALLS</button>
+                    <button onClick={() => setSide('PUT')} className={`px-4 py-1.5 rounded-md text-[9px] font-black transition-all ${side === 'PUT' ? 'bg-rose-500 text-white shadow-xl shadow-rose-500/20' : 'text-slate-500'}`}>PUTS</button>
+               </div>
+               <div className="flex items-center gap-2">
+                    <span className="text-[9px] text-slate-500 uppercase font-black">Qty</span>
+                    <input type="number" value={qty} onChange={e => setQty(Number(e.target.value))} className="w-12 bg-black/40 border border-white/5 rounded px-2 py-1 text-[10px] text-white font-bold" />
+               </div>
+            </div>
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+                <table className="w-full text-left text-[9px]">
+                    <thead className="sticky top-0 bg-slate-900 z-10 border-b border-white/10">
+                        <tr className="text-slate-600 font-black uppercase">
+                            <th className="p-3">Strike</th>
+                            <th className="p-3 text-right">Premium</th>
+                            <th className="p-3 text-right">Delta</th>
+                            <th className="p-3 text-center">Trade</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                        {chain.map((row, idx) => {
+                            const data = side === 'CALL' ? row.call : row.put;
+                            const isATM = row.moneyness === 'ATM';
+                            return (
+                                <tr key={idx} className={`group hover:bg-white/5 transition-all ${isATM ? 'bg-blue-500/10' : ''}`}>
+                                    <td className="p-3 font-bold text-slate-200">
+                                        ₹{row.strike.toLocaleString()}
+                                        {isATM && <span className="ml-1 text-[7px] bg-blue-500/40 text-blue-400 px-1 rounded uppercase">ATM</span>}
+                                    </td>
+                                    <td className={`p-3 text-right font-black ${side === 'CALL' ? 'text-emerald-400' : 'text-rose-400'}`}>₹{data.price.toFixed(2)}</td>
+                                    <td className="p-3 text-right font-medium text-slate-500">{data.delta.toFixed(2)}</td>
+                                    <td className="p-3 text-center">
+                                        <button disabled={buying} onClick={() => handleBuy(row.strike)} className={`px-2 py-1 rounded font-black text-[8px] uppercase transition-all shadow-lg ${side === 'CALL' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500 hover:text-white' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30 hover:bg-rose-500 hover:text-white'}`}>
+                                            Enter
+                                        </button>
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+};
+
 const ProTerminalTab = ({ livePrices, priceHistory, orders, token }) => {
     const allSymbols = Object.keys(livePrices);
     const defaultSymbols = allSymbols.length >= 4 
@@ -2124,6 +2859,7 @@ const ProTerminalTab = ({ livePrices, priceHistory, orders, token }) => {
     const [editingPanel, setEditingPanel] = useState(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [showPatterns, setShowPatterns] = useState(false);
+    const [sidebarTab, setSidebarTab] = useState('depth'); // 'depth' or 'options'
     const [detectedPatterns, setDetectedPatterns] = useState({}); // { symbol: [patterns] }
 
     const fetchPatterns = async (symbol) => {
@@ -2235,19 +2971,27 @@ const ProTerminalTab = ({ livePrices, priceHistory, orders, token }) => {
                     })}
                 </div>
 
-                {/* Institutional Sidebar (DOM) */}
-                <div className="hidden xl:flex w-72 bg-dark/40 rounded-2xl border border-white/5 flex-col overflow-hidden shadow-2xl backdrop-blur-md">
-                    <div className="p-4 border-b border-white/5 flex justify-between items-center bg-slate-900/60">
-                        <span className="text-[10px] font-black text-slate-200 tracking-widest flex items-center gap-2">
-                            <i data-lucide="layers" className="w-3.5 h-3.5 text-orange-400"></i> ORDER BOOK DEPTH
-                        </span>
-                        <div className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_#3b82f6] animate-pulse"></div>
+                {/* Institutional Sidebar (DOM / Options) */}
+                <div className="hidden xl:flex w-80 bg-dark/40 rounded-2xl border border-white/5 flex-col overflow-hidden shadow-2xl backdrop-blur-md">
+                    <div className="p-1 border-b border-white/5 flex justify-between items-center bg-slate-900/60 shrink-0">
+                        <button onClick={() => setSidebarTab('depth')} 
+                            className={`flex-1 py-3 text-[10px] font-black tracking-widest uppercase transition-all flex items-center justify-center gap-2 ${sidebarTab === 'depth' ? 'text-orange-400 bg-orange-400/10' : 'text-slate-500 hover:text-slate-300'}`}>
+                            <i data-lucide="layers" className="w-3.5 h-3.5"></i> DEPTH
+                        </button>
+                        <button onClick={() => setSidebarTab('options')} 
+                            className={`flex-1 py-3 text-[10px] font-black tracking-widest uppercase transition-all flex items-center justify-center gap-2 ${sidebarTab === 'options' ? 'text-amber-400 bg-amber-400/10' : 'text-slate-500 hover:text-slate-300'}`}>
+                            <i data-lucide="network" className="w-3.5 h-3.5"></i> OPTIONS
+                        </button>
                     </div>
                     <div className="flex-1 overflow-y-auto custom-scrollbar">
-                        <OrderBookDepth symbol={displaySymbols[0]} />
+                        {sidebarTab === 'depth' ? (
+                            <OrderBookDepth symbol={displaySymbols[0]} />
+                        ) : (
+                            <ProOptionsChain symbol={displaySymbols[0]} token={token} />
+                        )}
                     </div>
                     <div className="p-4 bg-slate-900/80 border-t border-white/5 text-[10px] font-medium text-slate-500 italic">
-                        Real-time liquidity heatmap from Institutional Gateways.
+                        {sidebarTab === 'depth' ? 'Real-time liquidity heatmap from Institutional Gateways.' : 'High-Greeks Derivatives Chain (Black-Scholes)'}
                     </div>
                 </div>
             </div>
@@ -3301,7 +4045,7 @@ const TradeTapePanel = ({ tape }) => {
 // ═══════════════════════════════════════════════════════════════════
 // FEATURE 3: ADVANCED OPTIONS CHAIN WITH GREEKS + PAYOFF DIAGRAM
 // ═══════════════════════════════════════════════════════════════════
-const PayoffCanvas = ({ chain, spot, optionType }) => {
+const PayoffCanvas = ({ chain, spot, optionType, selectedStrike }) => {
     const canvasRef = useRef();
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -3320,10 +4064,10 @@ const PayoffCanvas = ({ chain, spot, optionType }) => {
 
         const toX = s => pad.l + (s - minS) / (maxS - minS) * dw;
 
-        // Simulate payoff at expiry for a long call on the ATM strike
-        const atm = chain.find(c => c.moneyness === 'ATM') || chain[Math.floor(chain.length / 2)];
-        const premium = optionType === 'CALL' ? atm.call.price : atm.put.price;
-        const strike = atm.strike;
+        // Use selected strike if provided, else ATM fallback
+        const targetStrikeItem = chain.find(c => c.strike === selectedStrike) || chain.find(c => c.moneyness === 'ATM') || chain[Math.floor(chain.length/2)];
+        const strike = targetStrikeItem.strike;
+        const premium = optionType === 'CALL' ? targetStrikeItem.call.price : targetStrikeItem.put.price;
 
         const priceRange = strikes;
         const payoffs = priceRange.map(p => {
@@ -3396,7 +4140,10 @@ const OptionsChainTab = ({ token, livePrices }) => {
     const [loading, setLoading] = useState(false);
     const [chainType, setChainType] = useState('CALL'); // CALL or PUT
     const [spot, setSpot] = useState(0);
+    const [qty, setQty] = useState(50);
+    const [buying, setBuying] = useState(null); // strike being bought
     const [error, setError] = useState('');
+    const [selectedStrike, setSelectedStrike] = useState(null);
 
     const loadChain = async () => {
         setLoading(true); setError(''); setChain(null);
@@ -3404,13 +4151,31 @@ const OptionsChainTab = ({ token, livePrices }) => {
             const data = await apiFetch(`/trade/options/chain/${symbol.toUpperCase()}`, 'GET', null, token);
             setChain(data.chain);
             setSpot(data.spot);
+            // Default select ATM
+            const atm = data.chain.find(c => c.moneyness === 'ATM');
+            if(atm) setSelectedStrike(atm.strike);
         } catch(e) { setError(e.message); }
         setLoading(false);
     };
 
     useEffect(() => { loadChain(); }, []);
 
-    const ATM_IDX = chain ? chain.findIndex(c => c.moneyness === 'ATM') : -1;
+    const handleBuy = async (strike) => {
+        setBuying(strike);
+        try {
+            await apiFetch("/trade/options/buy", "POST", {
+                symbol: symbol.toUpperCase(),
+                strike_price: strike,
+                quantity: qty,
+                option_type: chainType,
+                expires_in_minutes: 43200 // 30 days
+            }, token);
+            alert(`Derivative Position Opened: ${qty} x ${symbol} ₹${strike} ${chainType}`);
+        } catch (e) {
+            alert(e.message);
+        }
+        setBuying(null);
+    };
 
     return (
         <div className="max-w-6xl mx-auto">
@@ -3419,113 +4184,148 @@ const OptionsChainTab = ({ token, livePrices }) => {
                     <i data-lucide="network" className="text-amber-400 w-6 h-6"></i> Options Chain (Black-Scholes)
                 </h2>
                 <div className="flex gap-2 items-center flex-wrap">
-                    <input value={symbol} onChange={e => setSymbol(e.target.value.toUpperCase())}
-                        className="bg-slate-900 border border-slate-700 rounded px-3 py-1.5 text-sm outline-none focus:border-primary w-36"
-                        placeholder="Symbol" />
+                    <div className="flex bg-slate-900 border border-slate-700 rounded overflow-hidden">
+                        <span className="bg-slate-800 px-3 py-1.5 text-[10px] font-black text-slate-500 uppercase flex items-center">Symbol</span>
+                        <input value={symbol} onChange={e => setSymbol(e.target.value.toUpperCase())}
+                            className="bg-transparent px-3 py-1.5 text-sm outline-none w-28 text-white font-bold"
+                            placeholder="Symbol" />
+                    </div>
+                    <div className="flex bg-slate-900 border border-slate-700 rounded overflow-hidden">
+                        <span className="bg-slate-800 px-3 py-1.5 text-[10px] font-black text-slate-500 uppercase flex items-center">Qty</span>
+                        <input type="number" value={qty} onChange={e => setQty(Number(e.target.value))}
+                            className="bg-transparent px-3 py-1.5 text-sm outline-none w-20 text-white font-bold" />
+                    </div>
                     <button onClick={loadChain} disabled={loading}
-                        className="bg-amber-500 hover:bg-amber-400 text-black font-bold px-4 py-1.5 rounded text-sm transition flex items-center gap-1">
-                        {loading ? <i data-lucide="loader" className="animate-spin w-4 h-4"></i> : <i data-lucide="zap" className="w-4 h-4"></i>}
-                        Load Chain
+                        className="bg-amber-500 hover:bg-amber-400 text-black font-extrabold px-4 py-1.5 rounded text-sm transition flex items-center gap-1 shadow-lg shadow-amber-900/20">
+                        {loading ? <i data-lucide="loader" className="animate-spin w-4 h-4"></i> : <i data-lucide="zap" className="w-4 h-4 text-black fill-black"></i>}
+                        PROCESS CHAIN
                     </button>
-                    <div className="flex rounded overflow-hidden border border-slate-700">
-                        <button onClick={() => setChainType('CALL')} className={`px-3 py-1.5 text-sm font-bold transition ${chainType === 'CALL' ? 'bg-success text-white' : 'text-slate-400 hover:text-white'}`}>CALLS</button>
-                        <button onClick={() => setChainType('PUT')} className={`px-3 py-1.5 text-sm font-bold transition ${chainType === 'PUT' ? 'bg-danger text-white' : 'text-slate-400 hover:text-white'}`}>PUTS</button>
+                    <div className="flex rounded-lg overflow-hidden border border-slate-700 p-0.5 bg-slate-900">
+                        <button onClick={() => setChainType('CALL')} className={`px-4 py-1 text-xs font-black transition-all rounded-md ${chainType === 'CALL' ? 'bg-success text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>CALLS</button>
+                        <button onClick={() => setChainType('PUT')} className={`px-4 py-1 text-xs font-black transition-all rounded-md ${chainType === 'PUT' ? 'bg-danger text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>PUTS</button>
                     </div>
                 </div>
             </div>
 
-            {error && <div className="text-danger text-sm bg-danger/10 p-3 rounded mb-4 border border-danger/30">{error}</div>}
+            {error && <div className="text-danger text-sm bg-danger/10 p-3 rounded mb-4 border border-danger/30 flex items-center gap-2"><i data-lucide="alert-circle" className="w-4 h-4"></i>{error}</div>}
 
             {spot > 0 && (
-                <div className="flex items-center gap-3 mb-4 bg-dark p-3 rounded-lg border border-slate-800">
-                    <span className="text-slate-400 text-sm">Spot Price:</span>
-                    <span className="text-2xl font-bold font-mono text-primary">₹{spot.toFixed(2)}</span>
-                    <span className="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded border border-slate-700">30-day expiry  |  IV ~{chainType === 'CALL' ? '25' : '25'}%</span>
+                <div className="flex items-center gap-4 mb-4 bg-slate-900 border border-white/5 p-4 rounded-xl shadow-inner">
+                    <div>
+                        <span className="text-slate-500 text-[10px] font-black uppercase tracking-widest block mb-0.5">Spot Price</span>
+                        <div className="text-2xl font-black font-mono text-white tabular-nums tracking-tighter">₹{spot.toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
+                    </div>
+                    <div className="h-10 w-px bg-slate-800 mx-2"></div>
+                    <div className="flex-1">
+                        <span className="text-slate-500 text-[10px] font-black uppercase tracking-widest block mb-0.5">Chain IV Profile</span>
+                        <div className="flex gap-2 items-center">
+                            <span className="text-xs font-bold text-slate-300">σ 25% (Constant)</span>
+                            <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded border border-slate-700 font-bold">EXPIRES: 30D</span>
+                        </div>
+                    </div>
                 </div>
             )}
 
-            <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 xl:grid-cols-4 gap-4 pb-12">
                 {/* Chain Table */}
-                <div className="xl:col-span-2 bg-dark rounded-xl border border-slate-800 overflow-auto max-h-[65vh] custom-scrollbar">
+                <div className="xl:col-span-3 bg-dark rounded-xl border border-slate-800 overflow-auto max-h-[70vh] shadow-2xl custom-scrollbar">
                     {loading && (
-                        <div className="text-amber-400 flex flex-col items-center justify-center py-20 animate-pulse">
-                            <i data-lucide="loader" className="animate-spin w-10 h-10 mb-3"></i>
-                            <p className="text-sm">Computing Black-Scholes greeks...</p>
+                        <div className="text-amber-400 flex flex-col items-center justify-center py-32 animate-pulse">
+                            <i data-lucide="loader" className="animate-spin w-12 h-12 mb-4"></i>
+                            <p className="text-sm font-black tracking-widest uppercase italic">Synthesizing Greeks Matrix...</p>
                         </div>
                     )}
                     {chain && (
                         <table className="w-full text-xs whitespace-nowrap">
                             <thead className="sticky top-0 bg-slate-900 border-b border-slate-800 z-10">
                                 <tr>
-                                    <th className="p-3 text-left text-slate-400">Strike</th>
-                                    <th className="p-3 text-right text-slate-400">Price</th>
-                                    <th className="p-3 text-right text-slate-400">Δ Delta</th>
-                                    <th className="p-3 text-right text-slate-400">Γ Gamma</th>
-                                    <th className="p-3 text-right text-slate-400">Θ Theta</th>
-                                    <th className="p-3 text-right text-slate-400">V Vega</th>
-                                    <th className="p-3 text-right text-slate-400">IV%</th>
+                                    <th className="p-4 text-left text-slate-400 uppercase font-black text-[10px] tracking-widest">Strike</th>
+                                    <th className="p-4 text-right text-slate-400 uppercase font-black text-[10px] tracking-widest">Premium</th>
+                                    <th className="p-4 text-right text-slate-400 uppercase font-black text-[10px] tracking-widest">Δ Delta</th>
+                                    <th className="p-4 text-right text-slate-400 uppercase font-black text-[10px] tracking-widest">Γ Gamma</th>
+                                    <th className="p-4 text-right text-slate-400 uppercase font-black text-[10px] tracking-widest">Θ Theta</th>
+                                    <th className="p-4 text-right text-slate-400 uppercase font-black text-[10px] tracking-widest">Vega</th>
+                                    <th className="p-4 text-center text-slate-400 uppercase font-black text-[10px] tracking-widest">Action</th>
                                 </tr>
                             </thead>
-                            <tbody className="divide-y divide-slate-900">
+                            <tbody className="divide-y divide-slate-800/50">
                                 {chain.map((row, i) => {
                                     const g = chainType === 'CALL' ? row.call : row.put;
                                     const isATM = row.moneyness === 'ATM';
+                                    const isSelected = selectedStrike === row.strike;
                                     const isITM = chainType === 'CALL' ? row.moneyness === 'ITM' : row.moneyness === 'OTM';
                                     return (
-                                        <tr key={i} className={`transition ${isATM ? 'bg-primary/10 border-l-2 border-primary' : isITM ? 'bg-slate-800/30' : 'hover:bg-slate-800/20'}`}>
-                                            <td className="p-3 font-bold">
-                                                <span className="font-mono">₹{row.strike.toLocaleString()}</span>
-                                                {isATM && <span className="ml-2 text-[9px] bg-primary text-white px-1.5 py-0.5 rounded font-bold">ATM</span>}
+                                        <tr key={i} 
+                                            onClick={() => setSelectedStrike(row.strike)}
+                                            className={`transition cursor-pointer group ${isSelected ? 'bg-primary/20 ring-1 ring-primary/50' : isATM ? 'bg-amber-500/10' : isITM ? 'bg-slate-800/20' : 'hover:bg-slate-800/10'}`}>
+                                            <td className="p-4">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-mono font-black text-white text-sm">₹{row.strike.toLocaleString()}</span>
+                                                    {isATM && <span className="text-[10px] bg-amber-500 text-black px-1.5 py-0.5 rounded font-black italic">ATM</span>}
+                                                </div>
                                             </td>
-                                            <td className={`p-3 text-right font-mono font-bold ${chainType === 'CALL' ? 'text-success' : 'text-danger'}`}>₹{g.price.toFixed(2)}</td>
-                                            <td className="p-3 text-right font-mono text-slate-300">{g.delta.toFixed(3)}</td>
-                                            <td className="p-3 text-right font-mono text-slate-400">{g.gamma.toFixed(4)}</td>
-                                            <td className="p-3 text-right font-mono text-orange-400/80">{g.theta.toFixed(3)}</td>
-                                            <td className="p-3 text-right font-mono text-purple-400/80">{g.vega.toFixed(3)}</td>
-                                            <td className="p-3 text-right font-mono text-cyan-400/70">{g.iv}%</td>
+                                            <td className={`p-4 text-right font-mono font-black text-base ${chainType === 'CALL' ? 'text-success' : 'text-danger'}`}>₹{g.price.toFixed(2)}</td>
+                                            <td className="p-4 text-right font-mono text-slate-200 font-bold">{g.delta.toFixed(3)}</td>
+                                            <td className="p-4 text-right font-mono text-slate-500">{g.gamma.toFixed(4)}</td>
+                                            <td className="p-4 text-right font-mono text-rose-500/80">{g.theta.toFixed(3)}</td>
+                                            <td className="p-4 text-right font-mono text-purple-400/80">{g.vega.toFixed(3)}</td>
+                                            <td className="p-4 text-center">
+                                                <button 
+                                                    onClick={(e) => { e.stopPropagation(); handleBuy(row.strike); }}
+                                                    disabled={buying === row.strike}
+                                                    className={`px-6 py-2 rounded-lg font-black uppercase text-[10px] transition-all shadow-xl hover:scale-105 active:scale-95 ${chainType === 'CALL' ? 'bg-success/20 text-success border border-success/30 hover:bg-success hover:text-white' : 'bg-danger/20 text-danger border border-danger/30 hover:bg-danger hover:text-white'}`}>
+                                                    {buying === row.strike ? "BUYING..." : `TRADE ${chainType}`}
+                                                </button>
+                                            </td>
                                         </tr>
                                     );
                                 })}
                             </tbody>
                         </table>
                     )}
-                    {!chain && !loading && (
-                        <div className="text-slate-500 flex flex-col items-center py-16">
-                            <i data-lucide="network" className="w-12 h-12 mb-3 opacity-20"></i>
-                            <p>Enter a symbol and click Load Chain</p>
-                        </div>
-                    )}
                 </div>
 
                 {/* Payoff Diagram */}
-                <div className="bg-dark rounded-xl border border-slate-800 p-4 flex flex-col">
-                    <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-2">
-                        <i data-lucide="chart-line" className="w-4 h-4 text-amber-400"></i> P&L at Expiry
-                    </h3>
-                    <div className="text-xs text-slate-500 mb-3 flex gap-3">
-                        <span>Strategy: Long ATM {chainType}</span>
-                        {spot > 0 && <span>Spot: ₹{spot.toFixed(0)}</span>}
+                <div className="bg-dark rounded-xl border border-slate-800 p-6 flex flex-col shadow-2xl h-fit sticky top-6">
+                    <div className="flex justify-between items-center mb-6">
+                        <h3 className="text-sm font-black text-white uppercase tracking-widest flex items-center gap-2">
+                            <i data-lucide="chart-line" className="w-4 h-4 text-amber-400"></i> RISK PROFILE
+                        </h3>
+                        <span className="text-[10px] font-black text-slate-500 border border-slate-800 px-2 py-0.5 rounded">EXPIRY: 30D</span>
                     </div>
-                    <div className="flex-1 min-h-[200px] bg-slate-900 rounded-lg overflow-hidden">
-                        {chain ? (
-                            <PayoffCanvas chain={chain} spot={spot} optionType={chainType} />
+
+                    <div className="space-y-4 mb-6">
+                        <div className="bg-slate-900 border border-white/5 p-4 rounded-xl">
+                            <div className="text-[10px] text-slate-500 font-black uppercase tracking-tighter mb-1">Selected Strategy</div>
+                            <div className="text-sm font-bold text-white flex justify-between items-center">
+                                <span>Long {selectedStrike || '--'} {chainType}</span>
+                                <span className={`text-[10px] px-2 py-0.5 rounded ${chainType === 'CALL' ? 'bg-success/20 text-success' : 'bg-danger/20 text-danger'}`}>BULLISH BIAS [MOCK]</span>
+                            </div>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800">
+                                <span className="text-[9px] text-slate-600 font-bold uppercase block mb-1">Max Profit</span>
+                                <span className="text-sm font-black text-emerald-400 italic">UNLIMITED 🚀</span>
+                            </div>
+                            <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800 text-right">
+                                <span className="text-[9px] text-slate-600 font-bold uppercase block mb-1">Max Risk</span>
+                                <span className="text-sm font-black text-rose-500 italic">
+                                    ₹{(selectedStrike && chain ? (chainType === 'CALL' ? chain.find(c=>c.strike === selectedStrike)?.call.price : chain.find(c=>c.strike === selectedStrike)?.put.price || 0) * qty : 0).toFixed(0)}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="h-64 bg-black/40 rounded-xl overflow-hidden border border-white/5 p-2 mb-4">
+                        {chain && selectedStrike ? (
+                            <PayoffCanvas chain={chain} spot={spot} optionType={chainType} selectedStrike={selectedStrike} />
                         ) : (
-                            <div className="h-full flex items-center justify-center text-slate-600 text-sm">
-                                Load chain to see payoff
+                            <div className="h-full flex flex-col items-center justify-center text-slate-600 text-sm italic">
+                                <i data-lucide="info" className="w-8 h-8 mb-2 opacity-10"></i>
+                                Select a strike to analyze
                             </div>
                         )}
-                    </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                        <div className="bg-slate-900 p-2 rounded border border-slate-800">
-                            <div className="text-slate-500">Max Profit</div>
-                            <div className="font-bold text-success">{chainType === 'CALL' ? 'Unlimited 🚀' : `₹${chain ? (chain.find(c=>c.moneyness==='ATM')?.put.price * -1 + chain[0].strike).toFixed(0) : '--'}`}</div>
-                        </div>
-                        <div className="bg-slate-900 p-2 rounded border border-slate-800">
-                            <div className="text-slate-500">Max Loss</div>
-                            <div className="font-bold text-danger">
-                                {chain ? `-₹${(chainType === 'CALL' ? chain.find(c=>c.moneyness==='ATM')?.call.price : chain.find(c=>c.moneyness==='ATM')?.put.price || 0).toFixed(2)}` : '--'}
-                            </div>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -4416,8 +5216,157 @@ const StrategyBuilderTab = ({ token, livePrices, priceHistory }) => {
     );
 };
 
-const App = () => {
+// ═══════════════════════════════════════════════════════════════════
+// NEW: AI COPILOT & WHALE TRACKER
+// ═══════════════════════════════════════════════════════════════════
+const CopilotOrb = ({ token, onCommandAction }) => {
+    const [query, setQuery] = useState('');
+    const [active, setActive] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [history, setHistory] = useState([]);
+    const [response, setResponse] = useState(null);
+    const scrollRef = useRef();
 
+    const handleSubmit = async (e) => {
+        if (e) e.preventDefault();
+        if (!query.trim()) return;
+        setLoading(true);
+        setResponse(null);
+        try {
+            const data = await apiFetch("/trade/command", "POST", { query }, token);
+            setResponse(data);
+            setHistory(prev => [...prev, { q: query, r: data.message }]);
+            if (data.action) onCommandAction(data.action, data.payload);
+        } catch (err) {
+            setResponse({ type: 'error', message: 'Fault in neural link. Try again.' });
+        }
+        setQuery('');
+        setLoading(false);
+    };
+
+    useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [history, loading]);
+
+    return (
+        <div className="fixed bottom-6 right-6 z-[100] flex flex-col items-end">
+            {active && (
+                <div className="bg-darker/95 backdrop-blur-xl border border-slate-700/50 rounded-2xl w-80 shadow-2xl mb-4 overflow-hidden flex flex-col max-h-[500px]">
+                    <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+                        <span className="text-xs font-bold text-primary flex items-center gap-2">
+                            <i data-lucide="zap" className="w-4 h-4"></i> AI TRADING COPILOT
+                        </span>
+                        <button onClick={() => setActive(false)} className="text-slate-500 hover:text-white"><i data-lucide="x" className="w-4 h-4"></i></button>
+                    </div>
+                    
+                    <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar text-sm min-h-[100px]">
+                        {history.length === 0 && !loading && (
+                            <div className="text-slate-600 italic">"Buy 10 TCS", "Show my P&L", or "Analyze NIFTY"... I'm listening.</div>
+                        )}
+                        {history.map((h, i) => (
+                            <div key={i}>
+                                <div className="text-slate-400 font-bold text-[10px] mb-1">TRADER</div>
+                                <div className="bg-slate-800/50 px-3 py-2 rounded-lg mb-2">{h.q}</div>
+                                <div className="text-primary font-bold text-[10px] mb-1">COPILOT</div>
+                                <div className="bg-primary/10 border-l-2 border-primary px-3 py-2 rounded-r-lg whitespace-pre-wrap">{h.r}</div>
+                            </div>
+                        ))}
+                        {loading && (
+                            <div className="flex gap-2 items-center text-primary animate-pulse">
+                                <i data-lucide="loader" className="animate-spin w-4 h-4"></i> Processing...
+                            </div>
+                        )}
+                    </div>
+
+                    <form onSubmit={handleSubmit} className="p-3 bg-slate-900/80 border-t border-slate-800">
+                        <div className="relative">
+                            <input autoFocus value={query} onChange={e => setQuery(e.target.value)}
+                                className="w-full bg-slate-800 border border-slate-700 rounded-full px-4 py-2 pr-10 text-sm outline-none focus:border-primary transition"
+                                placeholder="Command Copilot..." />
+                            <button type="submit" className="absolute right-2 top-1.5 p-1 text-primary hover:scale-110 transition">
+                                <i data-lucide="send" className="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            )}
+            
+            <button onClick={() => setActive(!active)}
+                className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-500 shadow-2xl relative group ${active ? 'bg-primary scale-90 rotate-90' : 'bg-slate-900 border-2 border-primary hover:scale-110'}`}>
+                <div className={`absolute inset-0 rounded-full bg-primary/20 animate-ping group-hover:block hidden`}></div>
+                <div className={`absolute inset-[-2px] rounded-full border-2 border-primary/30 animate-pulse`}></div>
+                <i data-lucide="cpu" className={`w-4 h-4 ${active ? 'text-white' : 'text-primary'}`}></i>
+            </button>
+        </div>
+    );
+};
+
+const WhaleTrackerAlerts = ({ alerts }) => {
+    const [isOpen, setIsOpen] = useState(false);
+    
+    return (
+        <div className="fixed bottom-6 right-16 z-[90] flex flex-col items-end">
+            {isOpen && (
+                <div className="bg-darker/95 backdrop-blur-3xl border border-amber-500/30 rounded-2xl w-80 shadow-2xl mb-4 overflow-hidden flex flex-col max-h-[500px] animate-in zoom-in-95 fade-in duration-200 origin-bottom-right">
+                    <div className="p-4 border-b border-amber-500/20 flex justify-between items-center bg-amber-500/5">
+                        <span className="text-xs font-black text-amber-500 flex items-center gap-2">
+                             <i data-lucide="waves" className="w-4 h-4"></i> WHALE MONITOR (REAL-TIME)
+                        </span>
+                        <button onClick={() => setIsOpen(false)} className="text-slate-500 hover:text-white transition-colors">
+                            <i data-lucide="x" className="w-4 h-4"></i>
+                        </button>
+                    </div>
+                    
+                    <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar min-h-[120px]">
+                        {alerts.length === 0 ? (
+                            <div className="text-slate-600 text-center py-10 italic">
+                                <i data-lucide="shield-alert" className="w-10 h-10 mx-auto mb-3 opacity-10"></i>
+                                <p className="text-[10px] font-bold uppercase tracking-widest">No massive block trades detected.</p>
+                            </div>
+                        ) : (
+                            [...alerts].reverse().slice(0, 15).map((alert, i) => (
+                                <div key={i} className="bg-slate-900/60 p-3 rounded-xl border border-white/5 hover:border-amber-500/20 transition-all group/whale">
+                                    <div className="flex justify-between items-start mb-1">
+                                        <span className="text-[9px] font-bold text-amber-500 uppercase tracking-tighter shrink-0">{alert.side} ORDER</span>
+                                        <span className="text-[8px] text-slate-500 font-mono tracking-tighter">{new Date(alert.timestamp*1000).toLocaleTimeString()}</span>
+                                    </div>
+                                    <div className="flex justify-between items-end">
+                                        <div>
+                                            <div className="text-sm font-black text-white group-hover/whale:text-amber-400 transition-colors uppercase tracking-tight">{alert.symbol}</div>
+                                            <div className="text-[9px] text-slate-400 font-mono">QTY: {alert.volume.toLocaleString()} @ ₹{alert.price.toFixed(1)}</div>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="text-xs font-black text-amber-500 italic">₹{(alert.value / 100000).toFixed(1)}L</div>
+                                            <div className="text-[8px] font-bold uppercase tracking-widest text-slate-600">BLOCK VALUE</div>
+                                        </div>
+                                    </div>
+                                    <div className="mt-2 h-[1px] bg-white/5 rounded-full overflow-hidden">
+                                        <div className="h-full bg-gradient-to-r from-amber-500 to-amber-200 animate-shrink-width" style={{animationDuration: '5s'}}></div>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                    <div className="p-3 bg-amber-500/5 text-center border-t border-amber-500/10">
+                        <span className="text-[9px] font-black text-amber-600 uppercase tracking-[0.2em]">Institutional Surveillance Active</span>
+                    </div>
+                </div>
+            )}
+            
+            <button onClick={() => setIsOpen(!isOpen)}
+                className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-500 shadow-[0_10px_30px_rgba(245,158,11,0.2)] relative group ${isOpen ? 'bg-amber-500 scale-90 rotate-90' : 'bg-slate-900 border-2 border-amber-500/50 hover:scale-110 hover:border-amber-500'}`}>
+                {alerts.length > 0 && !isOpen && (
+                   <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-white text-[8px] font-black rounded-full flex items-center justify-center animate-bounce shadow-lg ring-[2px] ring-darker">
+                      {alerts.length > 99 ? '99+' : alerts.length}
+                   </span>
+                )}
+                <div className={`absolute inset-[-2px] rounded-full border-2 border-amber-500/30 animate-pulse ${alerts.length > 0 ? 'block' : 'hidden'}`}></div>
+                <i data-lucide="waves" className={`w-4 h-4 ${isOpen ? 'text-white' : 'text-amber-500'}`}></i>
+            </button>
+        </div>
+    );
+};
+
+
+const App = () => {
     return (
         <AuthProvider>
             <AuthConsumer />
@@ -4439,3 +5388,4 @@ if (domNode) {
 } else {
     console.error("Root element not found!");
 }
+

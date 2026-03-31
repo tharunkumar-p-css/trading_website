@@ -9,7 +9,7 @@ async def test():
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         async with AsyncSessionLocal() as db:
-            user_in = UserCreate(email='test100@example.com', password='password')
+            user_in = UserCreate(email='test300@example.com', password='password')
             user = await register(user_in, db)
             print('Success!', user.email)
     except Exception as e:

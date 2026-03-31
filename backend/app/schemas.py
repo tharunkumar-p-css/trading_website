@@ -10,7 +10,11 @@ class UserCreate(BaseModel):
 class UserResponse(BaseModel):
     id: int
     email: EmailStr
-    two_factor_enabled: bool
+    is_2fa_enabled: bool
+    xp: int
+    level: int
+    trading_style: str
+    risk_score: float
     class Config:
         from_attributes = True
 
@@ -41,7 +45,7 @@ class TransactionResponse(BaseModel):
     type: TransactionType
     amount: float
     status: PaymentStatus
-    timestamp: datetime
+    created_at: datetime
     class Config:
         from_attributes = True
 
@@ -88,16 +92,23 @@ class WithdrawRequest(BaseModel):
     account_details: str
 
 class TradingBotCreate(BaseModel):
+    name: str = "Sentinel Bot"
     symbol: str
     amount_per_trade: float
     interval_seconds: int
+    is_vol_aware: bool = False
+    rsi_min: Optional[float] = None
 
 class TradingBotResponse(BaseModel):
     id: int
+    name: str
     symbol: str
     amount_per_trade: float
     interval_seconds: int
+    is_vol_aware: bool
+    rsi_min: Optional[float]
     status: str
+    pnl: float
     last_executed: Optional[datetime]
     created_at: datetime
     class Config:

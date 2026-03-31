@@ -5,7 +5,7 @@ aiosqlite
 python-jose[cryptography]
 passlib[bcrypt]
 python-multipart
-pydantic
+pydantic[email]
 pydantic-settings
 cryptography
 alpaca-trade-api
