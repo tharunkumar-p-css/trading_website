@@ -15,6 +15,7 @@ import math
 import datetime
 import alpaca_trade_api as alpaca
 import random
+import re
 
 router = APIRouter()
 # Simple Psychology Engine State
@@ -299,67 +300,93 @@ async def process_ai_command(req: CommandRequest, current_user: User = Depends(g
     query = req.query.lower()
     resp = {"type": "info", "message": "Command recognized", "action": None}
     
-    # 1. Simple Keyword Intent Parsing (Mocking a complex NLP model)
-    if "buy" in query or "purchase" in query:
-        # Extract symbol and qty (regex or simple split)
-        import re
-        match = re.search(r'(buy|purchase)\s+(\d+)\s+(shares? of\s+)?([a-z0-9_-]+)', query)
-        if match:
-            qty = int(match.group(2))
-            symbol = match.group(4).upper()
-            if symbol in stock_prices:
-                resp = {
-                    "type": "trade",
-                    "message": f"Establishing buy intent for {qty} shares of {symbol}. Please confirm in the order panel.",
-                    "action": "PREFILL_ORDER",
-                    "payload": {"symbol": symbol, "quantity": qty, "side": "BUY"}
-                }
-            else:
-                resp["message"] = f"Symbol {symbol} not found in live ticker."
+    # 1. Natural Language Intent Parsing
+    # Trade Intent
+    buy_match = re.search(r'(buy|purchase|get)\s+(\d+)?\s*(shares? of\s+)?([a-z0-9_-]+)', query)
+    sell_match = re.search(r'(sell|liquidate|dispose)\s+(\d+)?\s*(shares? of\s+)?([a-z0-9_-]+)', query)
     
-    elif "sell" in query or "liquidate" in query:
-        match = re.search(r'(sell|liquidate)\s+(\d+)\s+(shares? of\s+)?([a-z0-9_-]+)', query)
-        if match:
-            qty = int(match.group(2))
-            symbol = match.group(4).upper()
+    if buy_match:
+        qty = int(buy_match.group(2)) if buy_match.group(2) else 1
+        symbol = buy_match.group(4).upper()
+        if symbol in stock_prices:
             resp = {
                 "type": "trade",
-                "message": f"Preparing sell order for {qty} shares of {symbol}.",
+                "message": f"Establishing buy intent for {qty} {symbol}. Please verify and click execute.",
                 "action": "PREFILL_ORDER",
-                "payload": {"symbol": symbol, "quantity": qty, "side": "SELL"}
-            }
-
-    elif "chart" in query or "show" in query or "graph" in query:
-        # e.g. "show me the chart for BTC_INR"
-        words = query.split()
-        symbol = next((w.upper() for w in words if w.upper() in stock_prices), None)
-        if symbol:
-            resp = {
-                "type": "nav",
-                "message": f"Switching terminal focus to {symbol} real-time data.",
-                "action": "SWITCH_CHART",
-                "payload": {"symbol": symbol}
+                "payload": {"symbol": symbol, "quantity": qty, "side": "BUY"}
             }
         else:
-            resp["message"] = "Specify a valid ticker symbol to update the view."
-
-    elif "pnl" in query or "portfolio" in query or "profit" in query:
+            resp["message"] = f"Symbol {symbol} is currently outside our liquidity pool."
+            
+    elif sell_match:
+        qty = int(sell_match.group(2)) if sell_match.group(2) else 1
+        symbol = sell_match.group(4).upper()
         resp = {
-            "type": "nav",
-            "message": "Opening your global performance dashboard.",
-            "action": "SWITCH_TAB",
-            "payload": {"tab": "portfolio"}
+            "type": "trade",
+            "message": f"Preparing sell order for {qty} {symbol}.",
+            "action": "PREFILL_ORDER",
+            "payload": {"symbol": symbol, "quantity": qty, "side": "SELL"}
         }
 
-    elif "bias" in query or "psychology" in query or "mental" in query:
+    # Navigation Intent
+    elif any(x in query for x in ["chart", "show", "open", "go to", "view"]):
+        # Extract target
+        target_map = {
+            "heatmap": "heatmap",
+            "portfolio": "portfolio",
+            "watchlist": "watchlist",
+            "orders": "orders",
+            "market": "market",
+            "crypto": "crypto",
+            "pro": "pro_terminal",
+            "terminal": "pro_terminal",
+            "strategy": "strategy_builder"
+        }
+        found_tab = next((v for k, v in target_map.items() if k in query), None)
+        
+        # Or symbol chart
+        symbol = next((w.upper() for w in query.split() if w.upper() in stock_prices), None)
+        
+        if found_tab:
+            resp = {
+                "type": "nav",
+                "message": f"Opening {found_tab.replace('_', ' ')} module...",
+                "action": "SWITCH_TAB",
+                "payload": {"tab": found_tab}
+            }
+        elif symbol:
+            resp = {
+                "type": "nav",
+                "message": f"Switching focus to {symbol} real-time visualizer.",
+                "action": "SWITCH_TAB", # Redirect to market with prefill
+                "payload": {"tab": "market"}
+            }
+            # Special case: pre-select the symbol
+            resp["action"] = "PREFILL_ORDER"
+            resp["payload"] = {"symbol": symbol, "quantity": 1, "side": "BUY"}
+
+    # Analysis Intent
+    elif "analyze" in query or "sentiment" in query:
+        symbol = next((w.upper() for w in query.split() if w.upper() in stock_prices), None)
+        if symbol:
+            resp = {
+                "type": "info",
+                "message": f"Neural processors are scanning {symbol} for pattern convergence...",
+                "action": "PREFILL_ORDER", # This will open the modal which has the analyze button
+                "payload": {"symbol": symbol, "quantity": 1, "side": "BUY"}
+            }
+        else:
+            resp["message"] = "Specify a ticker symbol for neural analysis."
+
+    elif any(x in query for x in ["bias", "psychology", "mental", "tilt"]):
         resp = {
             "type": "info",
-            "message": "Scanning behavioral patterns... Bias Shield confirms your current execution risk is STABLE.",
+            "message": "Bias Shield diagnostic: Pattern stability is within institutional safety margins.",
             "action": "BLINK_BIAS_SHIELD"
         }
 
     else:
-        resp["message"] = "AI Copilot: Command understood, but logic for this feature is being provisioned. try 'Buy 10 AAPL' or 'Show portfolio'."
+        resp["message"] = "AI Copilot: Try commands like 'Buy 5 Reliance', 'Show heatmap', or 'Analyze BTC_INR'."
 
     return resp
 
@@ -1428,6 +1455,34 @@ async def pnl_watcher_loop():
         except Exception as e:
             print(f"PnL Watcher Error: {e}")
         await asyncio.sleep(2.0)
+
+# --- BROKER HUB (INSTITUTIONAL GATEWAYS) -----------------------------------
+@router.get("/brokers", response_model=List[BrokerAccountResponse])
+async def get_brokers(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(BrokerAccount).where(BrokerAccount.user_id == current_user.id))
+    return res.scalars().all()
+
+@router.post("/brokers/connect")
+async def connect_broker(account: BrokerAccountCreate, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Connect a new institutional brokerage gateway."""
+    # In a real app, verify API keys with the provider here
+    new_acc = BrokerAccount(
+        user_id=current_user.id,
+        broker_name=account.broker_name,
+        api_key=account.api_key,
+        is_live=account.is_live
+    )
+    new_acc.api_secret = account.api_secret # Uses our model setter for encryption
+    
+    db.add(new_acc)
+    await db.commit()
+    return {"message": f"Successfully linked {account.broker_name} execution gateway."}
+
+@router.delete("/brokers/{broker_id}")
+async def disconnect_broker(broker_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    await db.execute(update(BrokerAccount).where(BrokerAccount.id == broker_id).where(BrokerAccount.user_id == current_user.id).values(is_active=False))
+    await db.commit()
+    return {"message": "Broker disconnected."}
 
 # Binary Greeks Utility (Black-Scholes Approximation)
 def calculate_greeks(symbol: str, strike: float, days_to_expiry: int):

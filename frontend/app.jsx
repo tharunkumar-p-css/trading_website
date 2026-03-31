@@ -1,5 +1,5 @@
 console.log("App.jsx is executing...");
-const { useState, useEffect, useContext, createContext, useRef } = React;
+const { useState, useEffect, useContext, createContext, useRef, useMemo, useCallback } = React;
 const { createRoot } = ReactDOM;
 const { LightweightCharts } = window;
 if (!LightweightCharts) console.error("LightweightCharts is not loaded!");
@@ -122,8 +122,8 @@ const ProChart = ({ data, symbol, compact = false, brackets = null, patterns = [
         };
 
         Object.entries(activeIndicators).forEach(([key, isOn]) => {
-            if (key === 'bb') return;
-            if (isOn) {
+            if (key === 'bb' || key === 'zones') return; // Handled by separate logic
+            if (isOn && indicatorConfig[key]) {
                 if (!refs[key]) refs[key] = indicatorConfig[key].factory();
                 refs[key].setData(indicatorConfig[key].data());
             } else {
@@ -202,7 +202,7 @@ const ProChart = ({ data, symbol, compact = false, brackets = null, patterns = [
 
     const redrawCanvas = (allDrawings, inProgress = null) => {
         const canvas = drawingCanvasRef.current;
-        if (!canvas) return;
+        if (!canvas || !data || data.length === 0) return;
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -244,6 +244,35 @@ const ProChart = ({ data, symbol, compact = false, brackets = null, patterns = [
         };
 
         allDrawings.forEach(d => drawShape(d, ctx));
+
+        // Draw Heat-DOM (Institutional Liquidity Heatmap)
+        if (data.length > 0 && data[data.length - 1].book) {
+            const book = data[data.length - 1].book;
+            const prices = data.map(d => d.close);
+            const minP = Math.min(...prices) * 0.998;
+            const maxP = Math.max(...prices) * 1.002;
+            const range = maxP - minP || 1;
+
+            const drawDepth = (side, color) => {
+                book[side].forEach(level => {
+                    const py = canvas.height - ((level.price - minP) / range) * canvas.height;
+                    const opacity = Math.min(level.qty / 2000, 0.4);
+                    const width = (level.qty / 5000) * (canvas.width * 0.15); // Width based on qty
+                    ctx.fillStyle = level.is_wall ? color.replace('0.1', '0.6') : color;
+                    ctx.globalAlpha = opacity;
+                    ctx.fillRect(canvas.width - width - 40, py - 2, width, 4);
+                    if (level.is_wall) {
+                        ctx.strokeStyle = color.replace('0.1', '0.8');
+                        ctx.setLineDash([2, 2]);
+                        ctx.strokeRect(canvas.width - width - 40, py - 2, width, 4);
+                        ctx.setLineDash([]);
+                    }
+                });
+            };
+            drawDepth('bids', 'rgba(34,197,94,0.1)');
+            drawDepth('asks', 'rgba(239,68,68,0.1)');
+            ctx.globalAlpha = 1;
+        }
 
         // Draw Supply/Demand Zones (Sentinel Proprietary logic)
         if (activeIndicators.zones) {
@@ -376,7 +405,7 @@ const ProChart = ({ data, symbol, compact = false, brackets = null, patterns = [
         resize();
         window.addEventListener('resize', resize);
         return () => window.removeEventListener('resize', resize);
-    }, [drawings, patterns]);
+    }, [drawings, patterns, data, activeIndicators]);
 
     const toggleIndicator = (key) => setActiveIndicators(prev => ({ ...prev, [key]: !prev[key] }));
 
@@ -478,6 +507,40 @@ const ProChart = ({ data, symbol, compact = false, brackets = null, patterns = [
 const RealtimeChart = ({ data, type = "candlestick", height, showVolume = false, showIndicators = false }) => (
     <ProChart data={data} compact={true} />
 );
+
+const WhaleTicker = ({ alerts }) => {
+    if (!alerts || alerts.length === 0) return null;
+
+    return (
+        <div className="bg-amber-500/10 border-y border-amber-500/20 py-2 overflow-hidden flex items-center relative h-10 group shrink-0">
+             <div className="flex items-center gap-2 px-6 shrink-0 z-10 bg-slate-950/80 backdrop-blur-md border-r border-amber-500/20 h-full">
+                 <i data-lucide="shield-alert" className="w-4 h-4 text-amber-500 animate-pulse"></i>
+                 <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest italic whitespace-nowrap">Sentinel Surveillance Pulse</span>
+             </div>
+             <div className="flex items-center gap-10 animate-marquee whitespace-nowrap">
+                 {alerts.slice().reverse().map((a, i) => (
+                     <div key={i} className="flex items-center gap-3">
+                         <span className={`text-[10px] font-black ${a.side === 'BUY' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                             {a.symbol} {a.side === 'BUY' ? '▲' : '▼'}
+                         </span>
+                         <span className="text-[10px] font-mono text-slate-400">₹{(a.value/1000000).toFixed(1)}M</span>
+                         <span className="text-[8px] font-black bg-white/5 border border-white/5 px-2 py-0.5 rounded uppercase text-slate-500">BLOCK TRADE</span>
+                     </div>
+                 ))}
+                 {/* Duplicate for marquee continuity if needed */}
+                 {alerts.length < 5 && alerts.slice().reverse().map((a, i) => (
+                     <div key={i + '_copy'} className="flex items-center gap-3">
+                         <span className={`text-[10px] font-black ${a.side === 'BUY' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                             {a.symbol} {a.side === 'BUY' ? '▲' : '▼'}
+                         </span>
+                         <span className="text-[10px] font-mono text-slate-400">₹{(a.value/1000000).toFixed(1)}M</span>
+                         <span className="text-[8px] font-black bg-white/5 border border-white/5 px-2 py-0.5 rounded uppercase text-slate-500">BLOCK TRADE</span>
+                     </div>
+                 ))}
+             </div>
+        </div>
+    );
+};
 
 
 
@@ -820,6 +883,7 @@ const Dashboard = () => {
     const [showTape, setShowTape] = useState(false);
     const [showSentinel, setShowSentinel] = useState(false);
     const [biasData, setBiasData] = useState({ score: 0.8, recommendation: 'FOCUSED', tilt_detected: false });
+    const [prefillOrder, setPrefillOrder] = useState(null);
     const ws = useRef(null);
 
     // Sonic Trading Initialization
@@ -937,6 +1001,7 @@ const Dashboard = () => {
                 addNotification(`🤖 Bot auto-invested ${msg.data.quantity} ${msg.data.symbol} @ ₹${msg.data.price}`);
                 apiFetch("/trade/portfolio", "GET", null, token).then(setPortfolio);
                 apiFetch("/trade/orders", "GET", null, token).then(setOrders);
+                window.dispatchEvent(new CustomEvent('trading_app_event', { detail: msg }));
             } else if (msg.type === "achievement_unlocked") {
                 addNotification(`🏆 BADGE UNLOCKED: ${msg.data.badge} - ${msg.data.desc}`);
             } else if (msg.type === "price_alert") {
@@ -1004,7 +1069,10 @@ const Dashboard = () => {
                 break;
             case 'PREFILL_ORDER':
                 addNotification(`🤖 Copilot: Pre-filled ${payload.side} order for ${payload.quantity} ${payload.symbol}`);
-                // In a real app, this could open the trade modal or set state
+                setPrefillOrder({ ...payload, timestamp: Date.now() });
+                if (activeTab !== 'market' && activeTab !== 'crypto') {
+                    setActiveTab('market');
+                }
                 break;
             case 'SWITCH_CHART':
                 addNotification(`📊 Copilot: Switching focus to ${payload.symbol}`);
@@ -1025,13 +1093,21 @@ const Dashboard = () => {
             
             {/* Sidebar */}
             <div className={`fixed inset-y-0 left-0 z-50 w-72 bg-dark border-r border-slate-800 p-4 flex flex-col shrink-0 h-full overflow-y-auto transform transition-transform duration-300 ease-in-out md:relative md:w-64 md:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-                <div className="flex justify-between items-center mb-8">
+                <div className="flex justify-between items-center mb-6">
                     <h1 className="text-2xl font-bold text-primary flex items-center">
                         <i data-lucide="activity" className="mr-2"></i> Trading
                     </h1>
                     <button onClick={() => setIsSidebarOpen(false)} className="md:hidden text-slate-400 hover:text-white p-2">
                         <i data-lucide="x" className="w-6 h-6"></i>
                     </button>
+                </div>
+                
+                <div className="mb-6 px-3 py-2.5 bg-success/5 border border-success/20 rounded-xl flex items-center gap-3 shadow-inner group cursor-default">
+                    <div className="w-2 h-2 rounded-full bg-success animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
+                    <span className="text-[10px] font-black text-success uppercase tracking-[0.1em] italic">Working Mode: ACTIVE</span>
+                    <div className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
+                        <i data-lucide="shield-check" className="w-3 h-3 text-success/40"></i>
+                    </div>
                 </div>
                 
                 <nav className="flex-1 space-y-1 overflow-y-auto pb-4 custom-scrollbar">
@@ -1129,6 +1205,7 @@ const Dashboard = () => {
             {/* Main Content */}
             <div className="flex-1 flex flex-col h-screen overflow-hidden min-w-0">
                 <NewsTicker news={aiNews} />
+                <WhaleTicker alerts={whaleAlerts} />
                 <header className="min-h-[56px] md:h-16 border-b border-slate-800 bg-dark flex items-center px-4 md:px-6 shrink-0 relative z-30 justify-between">
                     <div className="flex items-center gap-3">
                         <button onClick={() => setIsSidebarOpen(true)} className="md:hidden text-slate-400 hover:text-white p-1 focus:outline-none">
@@ -1167,25 +1244,25 @@ const Dashboard = () => {
                 
                 <div className="flex-1 flex overflow-hidden relative">
                     <main className={`flex-1 overflow-y-auto p-3 md:p-6 bg-darker ${newsFeed.length > 0 ? 'pt-14 sm:pt-4 md:pt-6' : ''}`}>
-                        {activeTab === 'market' && <MarketTab livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} filterType="STOCKS" />}
-                        {activeTab === 'mutual_funds' && <MarketTab livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} filterType="MUTUAL_FUNDS" />}
-                        {activeTab === 'crypto' && <MarketTab livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} filterType="CRYPTO" />}
+                        {activeTab === 'market' && <MarketTab livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} filterType="STOCKS" biasShield={biasData} preFill={prefillOrder} />}
+                        {activeTab === 'mutual_funds' && <MarketTab livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} filterType="MUTUAL_FUNDS" biasShield={biasData} preFill={prefillOrder} />}
+                        {activeTab === 'crypto' && <MarketTab livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} filterType="CRYPTO" biasShield={biasData} preFill={prefillOrder} />}
                         {activeTab === 'bots' && <BotsTab livePrices={livePrices} token={token} />}
                         {activeTab === 'leaderboard' && <LeaderboardTab userStats={userStats} userEmail={user.email} token={token} />}
                         {activeTab === 'profile' && <ProfileTab user={user} token={token} />}
                         {activeTab === 'alerts' && <AlertsTab token={token} />}
                         {activeTab === 'derivatives' && <DerivativesTab token={token} livePrices={livePrices} />}
-                        {activeTab === 'watchlist' && <WatchlistTab watchlist={watchlist} livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} />}
+                        {activeTab === 'watchlist' && <WatchlistTab watchlist={watchlist} livePrices={livePrices} priceHistory={priceHistory} token={token} onRefresh={loadData} biasShield={biasData} preFill={prefillOrder} />}
                         {activeTab === 'portfolio' && (
                             <>
                                 <RiskPanel token={token} />
-                                <PortfolioTab portfolio={portfolio} livePrices={livePrices} token={token} portfolioHistory={portfolioHistory} />
+                                <PortfolioTab portfolio={portfolio} livePrices={livePrices} token={token} portfolioHistory={portfolioHistory} onRefresh={loadData} />
                             </>
                         )}
                         {activeTab === 'orders' && <OrdersTab orders={orders} onRefresh={loadData} token={token} />}
-                        {activeTab === 'pro_terminal' && <ProTerminalTab livePrices={livePrices} priceHistory={priceHistory} orders={orders} />}
+                        {activeTab === 'pro_terminal' && <ProTerminalTab livePrices={livePrices} priceHistory={priceHistory} orders={orders} biasShield={biasData} token={token} />}
                         {activeTab === 'broker' && <BrokerDashboardTab token={token} />}
-                        {activeTab === 'heatmap' && <HeatmapTab livePrices={livePrices} priceHistory={priceHistory} />}
+                        {activeTab === 'heatmap' && <HeatmapTab livePrices={livePrices} priceHistory={priceHistory} whaleAlerts={whaleAlerts} />}
                         {activeTab === 'global_markets' && <GlobalMarketTab />}
                         {activeTab === 'options_chain' && <OptionsChainTab token={token} livePrices={livePrices} />}
                         {activeTab === 'options_oi' && <OptionsOITab token={token} livePrices={livePrices} />}
@@ -1235,7 +1312,7 @@ const Dashboard = () => {
 
 // --- Tabs ---
 
-const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "STOCKS" }) => {
+const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "STOCKS", biasShield, preFill }) => {
     const [selectedStock, setSelectedStock] = useState(null);
     const [quantity, setQuantity] = useState(1);
     const [orderType, setOrderType] = useState("MARKET");
@@ -1248,6 +1325,14 @@ const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "S
     const [trailingStop, setTrailingStop] = useState(false);
     const [showVolume, setShowVolume] = useState(true);
     const [showIndicators, setShowIndicators] = useState(false);
+
+    // AI Copilot Integration: Handle prefills
+    useEffect(() => {
+        if (preFill && preFill.symbol) {
+            setSelectedStock(preFill.symbol);
+            if (preFill.quantity) setQuantity(preFill.quantity);
+        }
+    }, [preFill]);
 
     // Reset state when modal closes
     useEffect(() => { if (!selectedStock) { setAiAnalysis(""); setStopLoss(""); setTakeProfit(""); setTrailingStop(false); } }, [selectedStock]);
@@ -1263,6 +1348,10 @@ const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "S
 
     const handleTrade = async (side) => {
         if (!selectedStock) return;
+        if (biasShield?.tilt_detected) {
+            setError("SENTINEL PROTECTION: Psychological Halt Active. Take a 5-minute breather.");
+            return;
+        }
         setError("");
         try {
             const body = { symbol: selectedStock, order_type: orderType, side: side, quantity: parseInt(quantity) };
@@ -1442,10 +1531,17 @@ const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "S
                         </div>
                     </div>
                         
-                    <div className="flex gap-4 mt-6 pt-4 border-t border-slate-800">
-                            <button onClick={()=>handleTrade("BUY")} className="flex-1 bg-success hover:bg-emerald-500 text-white font-bold py-3 rounded transition uppercase">Buy</button>
-                            <button onClick={()=>handleTrade("SELL")} className="flex-1 bg-danger hover:bg-red-500 text-white font-bold py-3 rounded transition uppercase">Sell</button>
-                        </div>
+                    <div className="flex gap-4 mt-6 pt-4 border-t border-slate-800 relative">
+                        {biasShield?.tilt_detected && (
+                            <div className="absolute inset-0 z-20 flex items-center justify-center bg-dark/60 backdrop-blur-[2px] rounded-xl border border-danger/30">
+                                <div className="text-[10px] font-black text-danger uppercase tracking-widest flex items-center gap-2">
+                                    <i data-lucide="shield-alert" className="w-4 h-4"></i> Emotional Halt
+                                </div>
+                            </div>
+                        )}
+                        <button onClick={()=>handleTrade("BUY")} disabled={biasShield?.tilt_detected} className="flex-1 bg-success hover:bg-emerald-500 text-white font-bold py-3 rounded transition uppercase disabled:opacity-50">Buy</button>
+                        <button onClick={()=>handleTrade("SELL")} disabled={biasShield?.tilt_detected} className="flex-1 bg-danger hover:bg-red-500 text-white font-bold py-3 rounded transition uppercase disabled:opacity-50">Sell</button>
+                    </div>
                     </div>
                 </div>
             )}
@@ -1453,7 +1549,7 @@ const MarketTab = ({ livePrices, priceHistory, token, onRefresh, filterType = "S
     );
 };
 
-const WatchlistTab = ({ watchlist, livePrices, priceHistory, token, onRefresh }) => {
+const WatchlistTab = ({ watchlist, livePrices, priceHistory, token, onRefresh, biasShield, preFill }) => {
     const [selectedStock, setSelectedStock] = useState(null);
     const [quantity, setQuantity] = useState(1);
     const [orderType, setOrderType] = useState("MARKET");
@@ -1466,6 +1562,14 @@ const WatchlistTab = ({ watchlist, livePrices, priceHistory, token, onRefresh })
     const [trailingStop, setTrailingStop] = useState(false);
     const [showVolume, setShowVolume] = useState(true);
     const [showIndicators, setShowIndicators] = useState(false);
+
+    // AI Copilot Integration
+    useEffect(() => {
+        if (preFill && preFill.symbol) {
+            setSelectedStock(preFill.symbol);
+            if (preFill.quantity) setQuantity(preFill.quantity);
+        }
+    }, [preFill]);
 
     useEffect(() => { if (!selectedStock) { setAiAnalysis(""); setStopLoss(""); setTakeProfit(""); setTrailingStop(false); } }, [selectedStock]);
 
@@ -1490,6 +1594,10 @@ const WatchlistTab = ({ watchlist, livePrices, priceHistory, token, onRefresh })
 
     const handleTrade = async (side) => {
         if (!selectedStock) return;
+        if (biasShield?.tilt_detected) {
+            setError("PSYCHOLOGICAL HALT: Deep breaths. Sentiment Shield engaged.");
+            return;
+        }
         setError("");
         try {
             const body = { symbol: selectedStock, order_type: orderType, side: side, quantity: parseInt(quantity) };
@@ -1602,6 +1710,33 @@ const WatchlistTab = ({ watchlist, livePrices, priceHistory, token, onRefresh })
                             </div>
                         </div>
                         
+                        {/* Sentinel Hedge Simulator */}
+                        <div className="mb-6 p-5 rounded-2xl bg-indigo-500/5 border border-indigo-500/20 relative group">
+                            <div className="flex justify-between items-center mb-3">
+                                <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest flex items-center gap-2">
+                                    <i data-lucide="activity" className="w-3.5 h-3.5"></i> Hedging Impact Analysis
+                                </h4>
+                                <span className="text-[8px] font-black bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded uppercase italic">BETA_SIM_v2</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-1">
+                                    <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Risk Allocation Shift</div>
+                                    <div className="text-sm font-black text-white flex items-baseline gap-1">
+                                        +{(quantity * (livePrices[selectedStock] || 0) / 10000).toFixed(1)}% <span className="text-[9px] text-indigo-400 italic font-medium">to Portfolio Delta</span>
+                                    </div>
+                                </div>
+                                <div className="space-y-1 text-right">
+                                    <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Sentiment Bias</div>
+                                    <div className="text-sm font-black text-emerald-400 uppercase tracking-tighter">BULLISH SKEW</div>
+                                </div>
+                            </div>
+                            <div className="mt-4 pt-4 border-t border-white/5">
+                                <div className="text-[8px] font-bold text-slate-600 uppercase border border-slate-800 rounded px-2 py-1 inline-block">
+                                    Sentinel Recommendation: SCALE IN SLOWLY
+                                </div>
+                            </div>
+                        </div>
+                        
                         <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 space-y-4">
                             <h3 className="text-sm font-bold text-slate-300 border-b border-slate-700 pb-2">Advanced Protection Brackets</h3>
                             <div>
@@ -1621,10 +1756,17 @@ const WatchlistTab = ({ watchlist, livePrices, priceHistory, token, onRefresh })
                         </div>
                     </div>
                         
-                    <div className="flex gap-4 mt-6 pt-4 border-t border-slate-800">
-                            <button onClick={()=>handleTrade("BUY")} className="flex-1 bg-success hover:bg-emerald-500 text-white font-bold py-3 rounded transition uppercase">Buy</button>
-                            <button onClick={()=>handleTrade("SELL")} className="flex-1 bg-danger hover:bg-red-500 text-white font-bold py-3 rounded transition uppercase">Sell</button>
-                        </div>
+                    <div className="flex gap-4 mt-6 pt-4 border-t border-slate-800 relative">
+                        {biasShield?.tilt_detected && (
+                            <div className="absolute inset-0 z-20 flex items-center justify-center bg-dark/60 backdrop-blur-[2px] rounded-xl border border-danger/30">
+                                <div className="text-[10px] font-black text-danger uppercase tracking-widest flex items-center gap-2">
+                                    <i data-lucide="shield-alert" className="w-4 h-4"></i> Emotional Halt
+                                </div>
+                            </div>
+                        )}
+                        <button onClick={()=>handleTrade("BUY")} disabled={biasShield?.tilt_detected} className="flex-1 bg-success hover:bg-emerald-500 text-white font-bold py-3 rounded transition uppercase disabled:opacity-50">Buy</button>
+                        <button onClick={()=>handleTrade("SELL")} disabled={biasShield?.tilt_detected} className="flex-1 bg-danger hover:bg-red-500 text-white font-bold py-3 rounded transition uppercase disabled:opacity-50">Sell</button>
+                    </div>
                     </div>
                 </div>
             )}
@@ -1690,7 +1832,7 @@ const OrdersTab = ({ orders, onRefresh, token }) => {
     );
 };
 
-const PortfolioTab = ({ portfolio, livePrices, token, portfolioHistory }) => {
+const PortfolioTab = ({ portfolio, livePrices, token, portfolioHistory, onRefresh }) => {
     const [selling, setSelling] = useState(null);
     const [sellAmount, setSellAmount] = useState(1);
     const [error, setError] = useState("");
@@ -1700,6 +1842,7 @@ const PortfolioTab = ({ portfolio, livePrices, token, portfolioHistory }) => {
         try {
             await apiFetch("/trade/order", "POST", { symbol: symbol, order_type: "MARKET", side: "SELL", quantity: parseInt(sellAmount) }, token);
             setSelling(null);
+            if (onRefresh) onRefresh();
         } catch (err) {
             setError(err.message);
         }
@@ -1730,43 +1873,39 @@ const PortfolioTab = ({ portfolio, livePrices, token, portfolioHistory }) => {
                 <table className="w-full text-left whitespace-nowrap min-w-max">
                     <thead className="bg-slate-900/50">
                         <tr>
-                            <th className="p-4 font-medium text-slate-400">Symbol</th>
-                            <th className="p-4 font-medium text-slate-400 text-right">Qty</th>
-                            <th className="p-4 font-medium text-slate-400 text-right">Avg. Price</th>
-                            <th className="p-4 font-medium text-slate-400 text-right">LTP</th>
-                            <th className="p-4 font-medium text-slate-400 text-right">P&L</th>
-                            <th className="p-4 font-medium text-slate-400 text-right">Action</th>
+                            <th className="p-4 font-medium text-slate-400 font-mono text-[10px] uppercase tracking-wider">Symbol</th>
+                            <th className="p-4 font-medium text-slate-400 font-mono text-[10px] uppercase tracking-wider text-right">Qty</th>
+                            <th className="p-4 font-medium text-slate-400 font-mono text-[10px] uppercase tracking-wider text-right">Avg. Price</th>
+                            <th className="p-4 font-medium text-slate-400 font-mono text-[10px] uppercase tracking-wider text-right">LTP</th>
+                            <th className="p-4 font-medium text-slate-400 font-mono text-[10px] uppercase tracking-wider text-right">Day P&L</th>
+                            <th className="p-4 font-medium text-slate-400 font-mono text-[10px] uppercase tracking-wider text-right">Action</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800">
                         {items.length === 0 ? (
-                            <tr><td colSpan="6" className="p-8 text-center text-slate-500">No {title.toLowerCase()} yet. Buy some from the Market!</td></tr>
+                            <tr><td colSpan="6" className="p-8 text-center text-slate-500 italic">No {title.toLowerCase()} in custody. Explore the terminal to add assets.</td></tr>
                         ) : items.map(item => {
                             const ltp = livePrices[item.symbol] || item.avg_price;
                             const itemPnl = (ltp - item.avg_price) * item.quantity;
+                            const pnlPct = ((ltp - item.avg_price) / item.avg_price) * 100;
                             return (
-                                <tr key={item.id} className="hover:bg-slate-800/50 transition">
-                                    <td className="p-4 font-bold">{item.symbol}</td>
-                                    <td className="p-4 text-right">{item.quantity}</td>
+                                <tr key={item.id} className="hover:bg-slate-800/50 transition border-l-4 border-l-transparent hover:border-l-primary/40">
+                                    <td className="p-4">
+                                        <div className="font-bold text-slate-100">{item.symbol}</div>
+                                        <div className="text-[10px] text-slate-500 font-mono">ISIN: {Math.random().toString(36).substring(7).toUpperCase()}</div>
+                                    </td>
+                                    <td className="p-4 text-right font-mono font-bold text-slate-300">{item.quantity}</td>
                                     <td className="p-4 text-right font-mono">₹{item.avg_price.toFixed(2)}</td>
-                                    <td className="p-4 text-right font-mono text-primary">₹{ltp.toFixed(2)}</td>
+                                    <td className="p-4 text-right font-mono text-primary font-bold">₹{ltp.toFixed(2)}</td>
                                     <td className={`p-4 text-right font-mono ${itemPnl >= 0 ? 'text-success' : 'text-danger'}`}>
-                                        {itemPnl >= 0 ? '+' : ''}₹{itemPnl.toFixed(2)}
+                                        <div className="font-bold">{itemPnl >= 0 ? '+' : ''}₹{itemPnl.toFixed(2)}</div>
+                                        <div className="text-[10px] opacity-80">{itemPnl >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%</div>
                                     </td>
                                     <td className="p-4 text-right">
-                                        {selling === item.symbol ? (
-                                            <div className="flex gap-2 justify-end items-center relative">
-                                                <div className="absolute -top-6 right-0 text-[10px] text-slate-500 italic font-medium">
-                                                    Val: ₹{(sellAmount * ltp).toLocaleString(undefined, {maximumFractionDigits:0})}
-                                                </div>
-                                                <input type="number" min="1" max={item.quantity} value={sellAmount} onChange={e=>setSellAmount(e.target.value)} className="w-16 p-1 text-black rounded outline-none" />
-                                                <button onClick={() => handleSell(item.symbol)} className="bg-danger hover:bg-red-600 px-3 py-1 rounded text-white text-sm font-bold transition">Sell</button>
-                                                <button onClick={() => setSelling(null)} className="text-slate-400 hover:text-white px-2 py-1 text-sm">Cancel</button>
-                                                {error && <div className="absolute top-10 right-0 text-danger text-xs whitespace-nowrap bg-darker p-1 rounded border border-danger shadow-xl">{error}</div>}
-                                            </div>
-                                        ) : (
-                                            <button onClick={() => { setSelling(item.symbol); setSellAmount(item.quantity); setError(""); }} className="bg-slate-700 hover:bg-danger text-white px-4 py-1 rounded text-sm transition font-bold">Sell</button>
-                                        )}
+                                        <button onClick={() => { setSelling(item.symbol); setSellAmount(item.quantity); setError(""); }} className="bg-slate-800 hover:bg-danger text-slate-300 hover:text-white px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all border border-slate-700 hover:border-danger shadow-lg flex items-center gap-2 ml-auto group">
+                                            <i data-lucide="external-link" className="w-3 h-3 group-hover:rotate-12 transition"></i>
+                                            Square Off
+                                        </button>
                                     </td>
                                 </tr>
                             );
@@ -1774,6 +1913,76 @@ const PortfolioTab = ({ portfolio, livePrices, token, portfolioHistory }) => {
                     </tbody>
                 </table>
             </div>
+
+            {/* Institutional Square-Off Modal */}
+            {selling && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[200] p-4">
+                    <div className="bg-dark p-6 rounded-2xl w-full max-w-md border border-slate-700 shadow-2xl animate-in zoom-in duration-200">
+                        <div className="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
+                            <div>
+                                <h2 className="text-xl font-black text-slate-100 italic tracking-tighter">SQUARE OFF</h2>
+                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">{selling} Portfolio Exit</p>
+                            </div>
+                            <button onClick={()=>setSelling(null)} className="text-slate-500 hover:text-white">&times;</button>
+                        </div>
+
+                        {error && <div className="bg-danger/10 border border-danger/20 p-3 rounded-xl text-danger text-xs mb-4 flex items-center gap-2">
+                            <i data-lucide="alert-circle" className="w-4 h-4"></i> {error}
+                        </div>}
+
+                        <div className="space-y-6">
+                            <div className="flex justify-between items-end bg-[#0f172a] p-4 rounded-xl border border-slate-800/50">
+                                <div>
+                                    <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block mb-1">Current Price (LTP)</label>
+                                    <div className="text-2xl font-mono font-bold text-primary">₹{(livePrices[selling] || 0).toFixed(2)}</div>
+                                </div>
+                                <div className="text-right">
+                                    <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block mb-1">Position Qty</label>
+                                    <div className="text-xl font-mono font-bold text-slate-300">{portfolio.find(p => p.symbol === selling)?.quantity || 0}</div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2 px-1 text-center">Liquidation Quantity</label>
+                                <div className="flex items-center gap-4">
+                                    <button onClick={()=>setSellAmount(prev => Math.max(1, prev - 1))} className="w-12 h-12 rounded-full border border-slate-800 flex items-center justify-center hover:bg-slate-800 transition">
+                                        <i data-lucide="minus" className="w-4 h-4"></i>
+                                    </button>
+                                    <input type="number" value={sellAmount} onChange={e=>setSellAmount(e.target.value)} 
+                                           className="flex-1 bg-slate-900 border-2 border-slate-800 focus:border-danger rounded-2xl py-3 text-center text-2xl font-mono font-bold outline-none transition shadow-inner" />
+                                    <button onClick={()=>setSellAmount(prev => Math.min(portfolio.find(p => p.symbol === selling)?.quantity || 1e9, parseInt(prev) + 1))} className="w-12 h-12 rounded-full border border-slate-800 flex items-center justify-center hover:bg-slate-800 transition">
+                                        <i data-lucide="plus" className="w-4 h-4"></i>
+                                    </button>
+                                </div>
+                                <div className="flex justify-center gap-2 mt-3">
+                                    {[0.25, 0.5, 1.0].map(pct => (
+                                        <button key={pct} onClick={()=>setSellAmount(Math.floor((portfolio.find(p=>p.symbol===selling)?.quantity || 0) * pct))} 
+                                                className="px-3 py-1 rounded-full bg-slate-800/50 border border-slate-700 text-[8px] font-black hover:bg-primary/20 hover:text-primary transition uppercase">
+                                            {pct*100}% Qty
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="bg-danger/5 border border-danger/10 p-4 rounded-2xl">
+                                <div className="flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">
+                                    <span>Est. Proceeds</span>
+                                    <span className="text-danger">MARKET EXIT</span>
+                                </div>
+                                <div className="text-xl font-mono font-black text-danger">₹{(parseFloat(sellAmount || 0) * (livePrices[selling] || 0)).toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
+                            </div>
+
+                            <div className="flex gap-4">
+                                <button onClick={()=>setSelling(null)} className="flex-1 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-300 transition border border-slate-800 rounded-2xl">Cancel</button>
+                                <button onClick={()=>handleSell(selling)} className="flex-[2] py-4 bg-danger hover:bg-red-500 text-white text-[10px] font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-danger/20 transition-all flex items-center justify-center gap-2">
+                                    <i data-lucide="zap" className="w-4 h-4"></i>
+                                    Confirm Square Off
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 
@@ -2848,18 +3057,18 @@ const ProOptionsChain = ({ symbol, token }) => {
     );
 };
 
-const ProTerminalTab = ({ livePrices, priceHistory, orders, token }) => {
+const ProTerminalTab = ({ livePrices, priceHistory, orders, token, biasShield }) => {
     const allSymbols = Object.keys(livePrices);
     const defaultSymbols = allSymbols.length >= 4 
         ? allSymbols.filter(s => !s.includes('_INR')).slice(0, 4) 
         : ["RELIANCE", "TCS", "INFY", "HDFCBANK"];
     
     const [panelSymbols, setPanelSymbols] = useState(defaultSymbols.slice(0, 4));
-    const [layout, setLayout] = useState('2x2'); // '2x2', '1+2', '1x1'
+    const [layout, setLayout] = useState('2x2'); // '2x2', '1+2', '1x1', '2x1'
     const [editingPanel, setEditingPanel] = useState(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [showPatterns, setShowPatterns] = useState(false);
-    const [sidebarTab, setSidebarTab] = useState('depth'); // 'depth' or 'options'
+    const [sidebarTab, setSidebarTab] = useState('depth'); // 'depth', 'options', 'trade'
     const [detectedPatterns, setDetectedPatterns] = useState({}); // { symbol: [patterns] }
 
     const fetchPatterns = async (symbol) => {
@@ -2898,6 +3107,8 @@ const ProTerminalTab = ({ livePrices, priceHistory, orders, token }) => {
         ? 'grid-cols-1 md:grid-cols-2'
         : layout === '1+2' 
         ? 'grid-cols-1 md:grid-cols-3'
+        : layout === '2x1'
+        ? 'grid-cols-1'
         : 'grid-cols-1';
 
     return (
@@ -2912,7 +3123,7 @@ const ProTerminalTab = ({ livePrices, priceHistory, orders, token }) => {
                 </div>
                 <div className="flex items-center gap-2">
                     <div className="flex bg-slate-800 p-0.5 rounded-lg mr-2 border border-slate-700">
-                        {[{id:'1x1',label:'1'},{id:'1+2',label:'1+2'},{id:'2x2',label:'2×2'}].map(l => (
+                        {[{id:'1x1',label:'1'},{id:'2x1',label:'2x1'},{id:'1+2',label:'1+2'},{id:'2x2',label:'2×2'}].map(l => (
                             <button key={l.id} onClick={() => setLayout(l.id)}
                                 className={`px-2.5 py-1 rounded text-[10px] font-black uppercase transition ${
                                     layout === l.id ? 'bg-primary text-white shadow-lg shadow-blue-500/20' : 'text-slate-500 hover:text-slate-300'
@@ -2929,6 +3140,12 @@ const ProTerminalTab = ({ livePrices, priceHistory, orders, token }) => {
                         <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></div>
                         <span className="text-[10px] font-black text-emerald-400 uppercase tracking-widest">Live Connectivity</span>
                     </div>
+                    {biasShield?.tilt_detected && (
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-danger/20 border border-danger/40 rounded-lg text-danger animate-pulse">
+                            <i data-lucide="shield-alert" className="w-3.5 h-3.5"></i>
+                            <span className="text-[10px] font-black uppercase tracking-widest">Psychological Halt Active</span>
+                        </div>
+                    )}
                 </div>
             </div>
             
@@ -2982,12 +3199,46 @@ const ProTerminalTab = ({ livePrices, priceHistory, orders, token }) => {
                             className={`flex-1 py-3 text-[10px] font-black tracking-widest uppercase transition-all flex items-center justify-center gap-2 ${sidebarTab === 'options' ? 'text-amber-400 bg-amber-400/10' : 'text-slate-500 hover:text-slate-300'}`}>
                             <i data-lucide="network" className="w-3.5 h-3.5"></i> OPTIONS
                         </button>
+                        <button onClick={() => setSidebarTab('trade')} 
+                            className={`flex-1 py-3 text-[10px] font-black tracking-widest uppercase transition-all flex items-center justify-center gap-2 ${sidebarTab === 'trade' ? 'text-emerald-400 bg-emerald-400/10' : 'text-slate-500 hover:text-slate-300'}`}>
+                            <i data-lucide="zap" className="w-3.5 h-3.5"></i> TRADE
+                        </button>
                     </div>
                     <div className="flex-1 overflow-y-auto custom-scrollbar">
                         {sidebarTab === 'depth' ? (
                             <OrderBookDepth symbol={displaySymbols[0]} />
-                        ) : (
+                        ) : sidebarTab === 'options' ? (
                             <ProOptionsChain symbol={displaySymbols[0]} token={token} />
+                        ) : (
+                            <div className="p-6">
+                                <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest mb-6 italic">Quick Authorization</h4>
+                                <div className="space-y-4 relative">
+                                    {biasShield?.tilt_detected && (
+                                        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-dark/60 backdrop-blur-md rounded-2xl border border-danger/30 text-center p-4">
+                                            <i data-lucide="shield-alert" className="w-10 h-10 text-danger mb-2 animate-pulse"></i>
+                                            <div className="text-[10px] font-black text-danger uppercase tracking-tighter">Psychological Interdiction Active</div>
+                                            <div className="text-[8px] text-slate-400 mt-1">High frequency trade patterns detected. Neutralize for 5 mins.</div>
+                                        </div>
+                                    )}
+                                    <div>
+                                        <label className="text-[10px] font-bold text-slate-600 block mb-1 uppercase">Order Vol</label>
+                                        <input type="number" defaultValue="50" className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white font-mono text-sm" />
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-3 pt-2">
+                                        <button className="bg-emerald-500/20 hover:bg-emerald-500 border border-emerald-500/40 text-emerald-400 hover:text-white font-black py-4 rounded-xl text-xs transition uppercase shadow-lg shadow-emerald-500/10">Quick Buy</button>
+                                        <button className="bg-rose-500/20 hover:bg-rose-500 border border-rose-500/40 text-rose-400 hover:text-white font-black py-4 rounded-xl text-xs transition uppercase shadow-lg shadow-rose-500/10">Quick Sell</button>
+                                    </div>
+                                    <div className="pt-4 mt-4 border-t border-white/5">
+                                        <div className="flex justify-between text-[10px] font-bold text-slate-500 uppercase mb-1">
+                                            <span>Est. Margin</span>
+                                            <span>₹{(livePrices[displaySymbols[0]] * 50).toLocaleString()}</span>
+                                        </div>
+                                        <div className="w-full bg-white/5 h-1 rounded-full overflow-hidden">
+                                            <div className="h-full bg-blue-500 w-1/3"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         )}
                     </div>
                     <div className="p-4 bg-slate-900/80 border-t border-white/5 text-[10px] font-medium text-slate-500 italic">
@@ -3282,13 +3533,20 @@ const BrokerDashboardTab = ({ token }) => {
     );
 };
 
-const HeatmapTab = ({ livePrices, priceHistory }) => {
+const HeatmapTab = ({ livePrices, priceHistory, whaleAlerts }) => {
     const [hoveredSym, setHoveredSym] = useState(null);
     const [filterSector, setFilterSector] = useState(null);
     const [whaleMode, setWhaleMode] = useState(false);
     
-    // Map whale status (this would come from real trade tape history)
-    const mockWhales = {"RELIANCE": true, "TCS": true, "HDFCBANK": true, "BTC_INR": true};
+    // Check if symbol has an active whale alert in last 60s
+    const activeWhales = useMemo(() => {
+        const now = Date.now() / 1000;
+        const set = new Set();
+        (whaleAlerts || []).forEach(a => {
+            if (now - a.timestamp < 60) set.add(a.symbol);
+        });
+        return set;
+    }, [whaleAlerts]);
     
     // Realistic sector groupings with weighted flex
     const sectors = [
@@ -3364,7 +3622,7 @@ const HeatmapTab = ({ livePrices, priceHistory }) => {
                 </div>
             </div>
             
-            <div className="bg-darker rounded-xl border border-slate-800 overflow-hidden shadow-2xl max-w-7xl mx-auto w-full flex flex-col gap-1.5 p-2">
+            <div className="bg-darker rounded-xl border border-slate-800 overflow-hidden shadow-2xl max-w-7xl mx-auto w-full flex flex-col gap-1.5 p-2 mb-8">
                 {displaySectors.map(sector => (
                     <div key={sector.name} className="flex flex-col rounded-lg overflow-hidden border border-slate-800" style={{ minHeight: '80px' }}>
                         <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest border-b border-slate-800/80 flex items-center gap-2"
@@ -3372,50 +3630,59 @@ const HeatmapTab = ({ livePrices, priceHistory }) => {
                             <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: sector.color }}></span>
                             {sector.name}
                         </div>
-                        <div className="flex flex-1 w-full">
+                        <div className="flex flex-1 w-full p-1.5 flex-wrap gap-1.5 bg-slate-900/20">
                             {sector.symbols.map(({ sym, cap }) => {
-                                const hist = priceHistory[sym] || [];
-                                const currentP = livePrices[sym] || 0;
-                                let percentChange = 0;
-                                if (hist.length > 3) {
-                                    const oldP = hist[Math.max(0, hist.length - Math.min(hist.length, 10))].close;
-                                    percentChange = oldP ? ((currentP - oldP) / oldP * 100) : 0;
-                                } else {
-                                    // Seeded pseudo-random based on symbol name for consistency
-                                    const seed = sym.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-                                    percentChange = ((seed % 100) / 100 * 10) - 5;
-                                }
+                                 const hist = priceHistory[sym] || [];
+                                 const currentP = livePrices[sym] || 0;
+                                 let percentChange = 0;
+                                 if (hist.length > 3) {
+                                     const oldP = hist[Math.max(0, hist.length - Math.min(hist.length, 10))].close;
+                                     percentChange = oldP ? ((currentP - oldP) / oldP * 100) : 0;
+                                 } else {
+                                     const seed = sym.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+                                     percentChange = ((seed % 100) / 100 * 10) - 5;
+                                 }
 
-                                const isPositive = percentChange >= 0;
-                                const bgColor = getHeatColor(percentChange, isPositive);
-                                const isHovered = hoveredSym === sym;
+                                 const isPositive = percentChange >= 0;
+                                 const bgColor = getHeatColor(percentChange, isPositive);
+                                 const isHovered = hoveredSym === sym;
+                                 const isWhale = whaleMode && activeWhales.has(sym);
 
-                                return (
-                                    <div key={sym}
-                                        onMouseEnter={() => setHoveredSym(sym)}
-                                        onMouseLeave={() => setHoveredSym(null)}
-                                        className={`flex flex-col items-center justify-center text-center cursor-default border-r border-black/20 last:border-0 relative transition-all overflow-hidden group ${
-                                            whaleMode && !mockWhales[sym] ? 'opacity-20 grayscale' : 'opacity-100 grayscale-0'
-                                        }`}
-                                        style={{ 
-                                            flexGrow: cap, 
-                                            backgroundColor: bgColor,
-                                            padding: '6px',
-                                            minWidth: '60px'
-                                        }}>
-                                        {isHovered && (
-                                            <div className="absolute inset-0 bg-white/5 z-0"></div>
-                                        )}
-                                        <div className="font-bold text-white text-xs md:text-sm leading-tight drop-shadow">{sym}</div>
-                                        <div className={`text-xs font-mono font-bold ${isPositive ? 'text-green-200' : 'text-red-200'}`}>
-                                            {isPositive ? '+' : ''}{percentChange.toFixed(2)}%
-                                        </div>
-                                        {currentP > 0 && (
-                                            <div className="text-[10px] text-white/60 mt-0.5">₹{currentP.toFixed(currentP > 1000 ? 0 : 2)}</div>
-                                        )}
-                                    </div>
-                                );
-                            })}
+                                 return (
+                                     <div key={sym}
+                                         onMouseEnter={() => setHoveredSym(sym)}
+                                         onMouseLeave={() => setHoveredSym(null)}
+                                         className={`relative flex flex-col justify-center items-center rounded-md transition-all duration-500 cursor-crosshair border border-white/5 active:scale-95 ${
+                                             isHovered ? 'z-10 shadow-2xl ring-2 ring-white/20' : ''
+                                         } ${isWhale ? 'animate-pulse' : ''}`}
+                                         style={{ 
+                                             flex: `1 0 ${cap * 10}%`, 
+                                             backgroundColor: bgColor,
+                                             minHeight: isHovered ? '90px' : '70px',
+                                             transform: isHovered ? 'scale(1.04)' : 'scale(1)'
+                                         }}>
+                                         {isWhale && (
+                                             <div className="absolute top-1 right-1">
+                                                 <i data-lucide="waves" className="w-3 h-3 text-cyan-400"></i>
+                                             </div>
+                                         )}
+                                         <div className={`font-black tracking-tighter transition-all ${cap > 6 ? 'text-lg' : 'text-xs'} ${Math.abs(percentChange) > 2 ? 'text-white' : 'text-white/80'}`}>
+                                             {sym}
+                                         </div>
+                                         <div className={`font-mono font-bold leading-none ${cap > 6 ? 'text-xs' : 'text-[8px]'} ${isPositive ? 'text-emerald-300' : 'text-rose-300'}`}>
+                                             {isPositive ? '+' : ''}{percentChange.toFixed(2)}%
+                                         </div>
+                                         
+                                         {isHovered && (
+                                             <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center p-2 rounded-md animate-in fade-in zoom-in-75">
+                                                  <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{sym}</div>
+                                                  <div className="text-sm font-black text-white">₹{currentP.toLocaleString()}</div>
+                                                  <div className={`text-[10px] font-bold ${isPositive ? 'text-success' : 'text-danger'}`}>{percentChange.toFixed(2)}%</div>
+                                             </div>
+                                         )}
+                                     </div>
+                                 );
+                             })}
                         </div>
                     </div>
                 ))}
@@ -5073,6 +5340,28 @@ const StrategyBuilderTab = ({ token, livePrices, priceHistory }) => {
         setNewRule({ symbol: 'NIFTY_50', condition: 'pct_change_up', condValue: '1.5', action: 'alert', qty: 1 });
     };
 
+    const runAiArchitect = (prompt) => {
+        if (!prompt) return;
+        setRunning(true);
+        // Heuristic Parser for demo (in production, this hits an LLM endpoint)
+        setTimeout(() => {
+            let res = { symbol: 'NIFTY_50', condition: 'rsi_below', condValue: '30', action: 'buy', qty: 10 };
+            const p = prompt.toLowerCase();
+            if (p.includes('reliance')) res.symbol = 'RELIANCE';
+            if (p.includes('tcs')) res.symbol = 'TCS';
+            if (p.includes('above') || p.includes('over')) res.condition = 'rsi_above';
+            if (p.includes('price')) res.condition = p.includes('above') ? 'price_above' : 'price_below';
+            if (p.includes('ema')) res.condition = p.includes('cross') ? 'ema_cross_up' : 'ema_cross_down';
+            
+            const num = p.match(/\d+/);
+            if (num) res.condValue = num[0];
+            
+            setNewRule(res);
+            setShowAdd(true);
+            setRunning(false);
+        }, 1000);
+    };
+
     const removeRule = (id) => setRules(prev => prev.filter(r => r.id !== id));
 
     return (
@@ -5083,12 +5372,19 @@ const StrategyBuilderTab = ({ token, livePrices, priceHistory }) => {
                     <span className="text-xs font-normal text-slate-500 bg-slate-800 px-2 py-0.5 rounded ml-2">IF → THEN Rules Engine</span>
                 </h2>
                 <div className="flex gap-2">
+                    <div className="relative group/ai flex items-center bg-slate-900/40 border border-purple-500/30 rounded-xl px-4 py-2 transition-all">
+                        <i data-lucide="sparkles" className="w-4 h-4 text-purple-400 mr-3 animate-pulse"></i>
+                        <input onKeyDown={e => e.key === 'Enter' && runAiArchitect(e.target.value)}
+                            placeholder="AI Architect: 'Buy Reliance if RSI < 30'..." 
+                            className="bg-transparent border-none outline-none text-xs text-white w-64 placeholder:text-slate-600 font-bold" />
+                        <div className="absolute top-[-40px] left-0 bg-purple-600 text-[10px] font-black text-white px-2 py-1 rounded opacity-0 group-hover/ai:opacity-100 transition-opacity whitespace-nowrap shadow-xl">GENERATE STRATEGY VIA NATURAL LANGUAGE</div>
+                    </div>
                     <button onClick={() => setShowAdd(p => !p)}
-                        className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded font-bold text-sm transition">
+                        className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold text-sm transition shadow-lg shadow-purple-500/20">
                         <i data-lucide="plus" className="w-4 h-4"></i> Add Rule
                     </button>
                     <button onClick={runBacktest} disabled={running || rules.length === 0}
-                        className="flex items-center gap-2 px-4 py-2 bg-success hover:bg-green-500 text-white rounded font-bold text-sm transition disabled:opacity-50">
+                        className="flex items-center gap-2 px-4 py-2 bg-success hover:bg-green-500 text-white rounded-xl font-bold text-sm transition disabled:opacity-50 shadow-lg shadow-success/20">
                         {running ? <i data-lucide="loader" className="animate-spin w-4 h-4"></i> : <i data-lucide="play" className="w-4 h-4"></i>}
                         Run Now
                     </button>
@@ -5290,10 +5586,11 @@ const CopilotOrb = ({ token, onCommandAction }) => {
             )}
             
             <button onClick={() => setActive(!active)}
-                className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-500 shadow-2xl relative group ${active ? 'bg-primary scale-90 rotate-90' : 'bg-slate-900 border-2 border-primary hover:scale-110'}`}>
-                <div className={`absolute inset-0 rounded-full bg-primary/20 animate-ping group-hover:block hidden`}></div>
+                className={`w-11 h-11 rounded-full flex items-center justify-center transition-all duration-500 shadow-2xl relative group ${active ? 'bg-primary scale-90 rotate-90 shadow-primary/30' : 'bg-slate-900 border-2 border-primary hover:scale-110 shadow-primary/10'}`}>
+                {!active && <div className="absolute inset-0 rounded-full bg-primary/20 animate-ping group-hover:block pointer-events-none"></div>}
                 <div className={`absolute inset-[-2px] rounded-full border-2 border-primary/30 animate-pulse`}></div>
-                <i data-lucide="cpu" className={`w-4 h-4 ${active ? 'text-white' : 'text-primary'}`}></i>
+                <i data-lucide={active ? 'x' : 'cpu'} className={`w-5 h-5 ${active ? 'text-white' : 'text-primary'}`}></i>
+                {!active && <span className="absolute -top-10 right-0 bg-dark border border-slate-700 px-3 py-1 rounded text-[10px] font-black uppercase tracking-widest text-primary whitespace-nowrap opacity-0 group-hover:opacity-100 transition shadow-2xl pointer-events-none">Neural Link Active</span>}
             </button>
         </div>
     );
